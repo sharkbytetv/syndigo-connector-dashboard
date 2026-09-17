@@ -87,6 +87,7 @@
     .sku-table tr.sku-conflict td:first-child { border-left:3px solid #e74c3c; }
     .sku-conflict-badge { display:inline-block;margin-left:6px;font-size:9px;font-weight:700;color:#fff;background:#c0392b;border-radius:2px;padding:1px 4px;vertical-align:middle;text-transform:uppercase;letter-spacing:.3px; }
     .sku-loading { color:#bbb;font-size:11px;font-style:italic; }
+    .sku-table td.sku-type-err { background:#fff0f0;color:#c0392b;font-weight:600; }
 
     .table-wrap { flex: 1; overflow: auto; border: 1px solid #e0e0e0; border-radius: 6px; background: #fff; }
     table { width: 100%; border-collapse: collapse; min-width: 1100px; }
@@ -150,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.8.3</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -330,6 +331,7 @@ let orphanCsCount = 0;
 let syncSummary = '';
 const expandedSkus = new Set();
 const skuCache = {};
+let skuAttrTypeMap = {};
 let newEntityIds = new Set();
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -434,6 +436,34 @@ async function loadConfig() {
     syndigoBaseUrl = data.baseUrl || '';
     shopifyStore   = data.shopifyStore || '';
   } catch { syndigoBaseUrl = ''; shopifyStore = ''; }
+  loadMappings();
+}
+
+async function loadMappings() {
+  if (!kvSecret) return;
+  try {
+    const resp = await fetch(`${API}/mappings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
+      body: JSON.stringify({ _env: currentEnv }),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const mappings = data?.response?.configObjects?.[0]?.data?.jsonData?.mappings || [];
+    skuAttrTypeMap = {};
+    for (const m of mappings) {
+      if (m.entityType !== 'sku' || !m.source?.startsWith('@attr(')) continue;
+      const attr = m.source.slice(6, -1);
+      let label = '';
+      const mm = (m.destination || '').match(/@metafield\([^,]+,([^,]+),/);
+      if (mm) label = mm[1].replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      else {
+        const pm = (m.destination || '').match(/@path\(variants\[%d\]\.(\w+)\)/);
+        if (pm) label = pm[1].replace(/\b\w/g, c => c.toUpperCase());
+      }
+      skuAttrTypeMap[attr] = { type: m.type || 'string', label: label || attr };
+    }
+  } catch { /* silent */ }
 }
 
 function applyIdSearch() {
@@ -1392,7 +1422,8 @@ async function toggleSkuExpand(uuid, internalId) {
       const variantOpts = product?.variantOpts?.length
         ? product.variantOpts
         : await fetchVariantOpts(uuid);
-      const attrNames = ['thgskuid', ...variantOpts.map(o => o.attr)];
+      const mappedAttrs = Object.keys(skuAttrTypeMap).filter(a => a !== 'thgskuid');
+      const attrNames = [...new Set(['thgskuid', ...variantOpts.map(o => o.attr), ...mappedAttrs])];
 
       const skuResp = await fetch(`${API}/skus`, {
         method: 'POST',
@@ -1495,6 +1526,46 @@ function skuSubrowHtml(p) {
       return `<tr${cls}><td>${row.skuLink}${badge}</td>${opts.map(o => `<td>${esc(row.vals[o.attr] || '—')}</td>`).join('')}</tr>`;
     }).join('');
     content = `${note}<table class="sku-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
+
+    const mappedEntries = Object.entries(skuAttrTypeMap).filter(([a]) => a !== 'thgskuid');
+    if (mappedEntries.length) {
+      const typeOk = (val, type) => {
+        if (!val) return true;
+        if (type === 'integer') return /^\d+$/.test(String(val));
+        if (type === 'decimal') return /^-?\d*\.?\d+$/.test(String(val));
+        return !String(val).includes('\n') && !String(val).includes('\r');
+      };
+      const mappedRows = cache.skus.map(sku => {
+        const a = sku.data?.attributes || {};
+        const skuid = a.thgskuid?.values?.[0]?.value || sku.name;
+        const skuLink = syndigoBaseUrl && sku.id
+          ? `<a href="${syndigoBaseUrl}/entity-manage?id=${esc(sku.id)}&type=sku" target="_blank" style="color:inherit;text-decoration:none;font-weight:700">${esc(skuid)}</a>`
+          : esc(skuid);
+        const vals = {};
+        for (const [attr] of mappedEntries) vals[attr] = a[attr]?.values?.[0]?.value ?? '';
+        return { skuLink, vals };
+      });
+      const visibleAttrs = mappedEntries.filter(([attr]) => mappedRows.some(r => r.vals[attr] !== ''));
+      if (visibleAttrs.length) {
+        const anyErr = mappedRows.some(row => visibleAttrs.some(([attr, { type }]) => !typeOk(row.vals[attr], type)));
+        const errNote = anyErr
+          ? `<div style="font-size:11px;color:#922b21;font-weight:600;margin:10px 0 4px">⚠ Type validation errors detected — highlighted cells contain invalid values</div>`
+          : `<div style="font-size:11px;color:#888;margin:10px 0 4px">Mapped attributes</div>`;
+        const mThead = `<tr><th>SKU</th>${visibleAttrs.map(([, { label }]) => `<th>${esc(label)}</th>`).join('')}</tr>`;
+        const mTbody = mappedRows.map(row => {
+          const cells = visibleAttrs.map(([attr, { type }]) => {
+            const val = row.vals[attr];
+            const bad = !!val && !typeOk(val, type);
+            const display = type === 'string' && val?.includes('\n')
+              ? esc(val.split('\n')[0].slice(0, 40)) + '<span style="color:#aaa"> +lines</span>'
+              : esc(val || '—');
+            return `<td${bad ? ' class="sku-type-err"' : ''}>${display}</td>`;
+          }).join('');
+          return `<tr><td>${row.skuLink}</td>${cells}</tr>`;
+        }).join('');
+        content += `${errNote}<table class="sku-table"><thead>${mThead}</thead><tbody>${mTbody}</tbody></table>`;
+      }
+    }
   }
   return `<tr class="sku-subrow"><td colspan="10"><div class="sku-subpanel">${content}</div></td></tr>`;
 }

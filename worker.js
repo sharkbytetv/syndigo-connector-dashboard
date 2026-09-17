@@ -63,6 +63,7 @@ export default {
       if (path === '/api/connectorstates') return await connectorStates(request, env);
       if (path === '/api/entities') return await entities(request, env);
       if (path === '/api/skus') return await getSkus(request, env);
+      if (path === '/api/mappings') return await getMappings(request, env);
       if (path === '/api/publish')         return await publish(request, env);
       if (path === '/api/status')          return await status(request, env);
       if (path === '/api/report')          return await report(request, env);
@@ -111,6 +112,23 @@ async function entities(request, env) {
     method: 'POST',
     headers: { ...staticHeaders(c), 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+  });
+  return ok(await r.text());
+}
+
+async function getMappings(request, env) {
+  if (request.headers.get('x-kv-secret') !== env.KV_SECRET) return err('Unauthorized', 401);
+  const { _env } = await request.json();
+  const c = cfg(_env, env);
+  const r = await fetch(`${c.baseUrl}/api/configurationservice/get`, {
+    method: 'POST',
+    headers: { ...staticHeaders(c), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      params: {
+        query: { id: 'app-shopify_mappings', filters: { typesCriterion: ['mappings'] } },
+        fields: { properties: ['_All'] },
+      },
+    }),
   });
   return ok(await r.text());
 }
