@@ -65,9 +65,9 @@
     .progress-sub   { font-size: 11px; color: #888; margin-top: 6px; }
     #batchLogToggle { font-size: 11px; color: #888; cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 4px; }
     #batchLogToggle:hover { color: #555; }
-    #batchLogBody   { margin-top: 6px; overflow-x: auto; }
+    #batchLogBody   { margin-top: 6px; overflow: auto; max-height: 220px; }
     #batchLogTable  { width: 100%; border-collapse: collapse; font-size: 11px; font-family: monospace; }
-    #batchLogTable th { text-align: left; color: #999; font-weight: 600; border-bottom: 1px solid #eee; padding: 2px 8px 4px 0; }
+    #batchLogTable th { text-align: left; color: #999; font-weight: 600; border-bottom: 1px solid #eee; padding: 2px 8px 4px 0; position: sticky; top: 0; background: #fff; }
     #batchLogTable td { padding: 3px 8px 3px 0; color: #333; white-space: nowrap; }
     #batchLogTable tr:nth-child(even) td { background: #fafafa; }
     .bl-pending { color: #bbb; }
@@ -138,7 +138,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.6.3</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.7</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -872,7 +872,7 @@ async function publishSelected() {
   initBatchLog();
 
   const BATCH_SIZE  = 10;
-  const CONCURRENCY = 3;
+  const CONCURRENCY = 15;
   const freshBatches = [];
   for (let i = 0; i < fresh.length; i += BATCH_SIZE) freshBatches.push(fresh.slice(i, i + BATCH_SIZE));
 
