@@ -1,6 +1,6 @@
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
@@ -55,6 +55,8 @@ export default {
     const path = new URL(request.url).pathname;
 
     try {
+      if (path === '/api/products' && request.method === 'GET')  return await getProducts(request, env);
+      if (path === '/api/products' && request.method === 'POST') return await saveProducts(request, env);
       if (path === '/api/connectorstates') return await connectorStates(request, env);
       if (path === '/api/publish')         return await publish(request, env);
       if (path === '/api/status')          return await status(request, env);
@@ -65,6 +67,23 @@ export default {
     }
   },
 };
+
+// ── KV storage ────────────────────────────────────────────────────────────────
+
+async function getProducts(request, env) {
+  const envKey = new URL(request.url).searchParams.get('env') || 'nonprod';
+  const data   = await env.SYNDIGO_PRODUCTS.get(`${envKey}/products`);
+  return ok(data || '[]');
+}
+
+async function saveProducts(request, env) {
+  const envKey = new URL(request.url).searchParams.get('env') || 'nonprod';
+  const body   = await request.text();
+  await env.SYNDIGO_PRODUCTS.put(`${envKey}/products`, body);
+  return ok('{"ok":true}');
+}
+
+// ── Syndigo proxy ─────────────────────────────────────────────────────────────
 
 async function connectorStates(request, env) {
   const body = await request.json();
