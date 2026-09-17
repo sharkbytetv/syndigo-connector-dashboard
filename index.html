@@ -104,7 +104,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.1</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.2</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -382,6 +382,7 @@ async function handleFile(input) {
         entityUuid,
       });
     }
+    if (!incoming.length) { alert('No product rows found. Check that the file has an "Entities" sheet and rows with Type = "product".'); return; }
     mergeImport(incoming);
   } else {
     // Fallback: simple CSV / XLSX (our own export format)
@@ -398,6 +399,7 @@ async function handleFile(input) {
       lastResult:  String(r['Last Result']         || r['lastResult']  || '').trim(),
       error:       String(r['Error']               || r['error']       || '').trim(),
     })).filter(p => p.entityUuid);
+    if (!incoming.length) { alert('No rows found in file.'); return; }
     mergeImport(incoming);
   }
 
@@ -433,6 +435,7 @@ function mergeImport(incoming) {
   renderTable();
   updateStats();
   document.getElementById('headerStatus').textContent = `${products.length} products`;
+  alert(`Imported ${incoming.length} products. Total: ${products.length}.`);
   saveToKV();
 }
 
