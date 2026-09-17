@@ -104,7 +104,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5.2</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5.3</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -684,7 +684,7 @@ async function publishSelected() {
 
       if (fireResp.status !== 200 || fireStatus !== 'success') {
         const errMsg = `HTTP ${fireResp.status}: ${fireStatus || JSON.stringify(fireResult).substring(0, 80)}`;
-        for (const p of batch) { p.lastResult = 'API Error'; p.error = errMsg; p.lastUpdated = new Date().toLocaleString(); }
+        for (const p of batch) { p.lastResult = 'API Error'; p.error = errMsg; p.lastUpdated = new Date().toISOString(); }
         renderTable();
         continue;
       }
@@ -749,7 +749,7 @@ async function fetchReport(taskId) {
 
 function applyReport(csvText, completedTime) {
   const rows = parseCSV(csvText);
-  const ts   = completedTime ? new Date(completedTime).toLocaleString() : new Date().toLocaleString();
+  const ts   = completedTime ? new Date(completedTime).toISOString() : new Date().toISOString();
   for (const row of rows) {
     const p = products.find(x => x.entityUuid === (row['Entity Id'] || '').trim());
     if (!p) continue;
@@ -915,7 +915,7 @@ function renderTable() {
         ? `<a href="https://admin.shopify.com/store/${esc(shopifyStore)}/products/${p.shopifyGid.replace('gid://shopify/Product/','')}" target="_blank" style="color:#A100FF;text-decoration:none" title="${esc(p.shopifyGid)}">${esc(gidNum)}</a>`
         : `<span class="trunc" title="${esc(p.shopifyGid)}">${esc(gidNum)}</span>`}</td>
       <td>${csBadge(p.csStatus)}</td>
-      <td style="white-space:nowrap;color:#888;font-size:11px">${esc(p.lastUpdated || '—')}</td>
+      <td style="white-space:nowrap;color:#888;font-size:11px">${esc(formatDate(p.lastUpdated))}</td>
       <td>${resultBadge(p.lastResult)}</td>
       <td style="max-width:200px;font-size:11px;color:#c0392b" title="${esc(p.error)}">${esc(trunc(p.error, 70))}</td>
     </tr>`;
@@ -1023,6 +1023,11 @@ function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function trunc(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : (s || ''); }
+function formatDate(s) {
+  if (!s) return '—';
+  const d = new Date(s);
+  return isNaN(d) ? s : d.toLocaleString();
+}
 function sleep(ms)   { return new Promise(r => setTimeout(r, ms)); }
 </script>
 </body>
