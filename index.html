@@ -104,7 +104,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5.1</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -528,7 +528,7 @@ async function handleShopifyFile(input) {
     if (gidMap[p.internalId]) { p.shopifyGid = gidMap[p.internalId]; updated++; }
   }
 
-  if (!updated) { alert('No matches found. If custom.product_id metafield is missing, drop the Master Register first to enable SKU fallback.'); return; }
+  if (!updated) { input.value = ''; alert('No matches found. If custom.product_id metafield is missing, drop the Master Register first to enable SKU fallback.'); return; }
   alert(`Backfilled ${updated} products with Shopify GIDs.`);
   renderTable(); updateStats(); saveToKV();
   input.value = '';
@@ -542,10 +542,11 @@ async function handleMasterReg(input) {
   const ws   = wb.Sheets['Issued'] || wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
   // Row 1 = title, Row 2 = section headers, Row 3 = actual column headers, data from Row 4
+  if (rows.length < 3) { alert('File does not have the expected header rows. Check it has an "Issued" sheet with at least 3 rows.'); input.value = ''; return; }
   const headers = rows[2].map(h => String(h).trim());
   const pidIdx  = headers.indexOf('BBB Product ID');
   const skuIdx  = headers.indexOf('BBB SKU ID');
-  if (pidIdx === -1 || skuIdx === -1) { alert('Could not find BBB Product ID / BBB SKU ID columns.'); return; }
+  if (pidIdx === -1 || skuIdx === -1) { input.value = ''; alert('Could not find BBB Product ID / BBB SKU ID columns.'); return; }
 
   masterSkuMap.clear();
   for (let i = 3; i < rows.length; i++) {
