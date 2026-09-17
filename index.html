@@ -126,7 +126,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.7</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.8</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -216,7 +216,6 @@
               <div class="dd-item" onclick="setFilter('all');closeDD()"><span class="dd-dot" style="background:#ccc"></span> All</div>
               <div class="dd-item" onclick="setFilter('none');closeDD()"><span class="dd-dot" style="background:#888"></span> No CS</div>
               <div class="dd-item" onclick="setFilter('inprocess');closeDD()"><span class="dd-dot" style="background:#e67e22"></span> In Process</div>
-              <div class="dd-item" onclick="setFilter('errors');closeDD()"><span class="dd-dot" style="background:#e74c3c"></span> Errors</div>
               <div class="dd-item" onclick="setFilter('completed');closeDD()"><span class="dd-dot" style="background:#27ae60"></span> Completed</div>
             </div>
           </th>
@@ -232,7 +231,17 @@
               <button style="width:100%;margin-top:4px;padding:5px;border:1px solid #ddd;border-radius:4px;font-size:11px;cursor:pointer;background:#fff" onclick="clearDateFilter()">Clear</button>
             </div>
           </th>
-          <th class="sortable" onclick="sortBy('lastResult')">Last Result</th>
+          <th class="th-pos" onclick="toggleDD('resultMenu')">
+            <div class="th-inner">
+              Last Result <span id="resultFilterBtn" class="th-filter-btn">All</span>
+            </div>
+            <div class="dd-menu" id="resultMenu" onclick="event.stopPropagation()">
+              <div class="dd-item" onclick="setResultFilter('all');closeDD()"><span class="dd-dot" style="background:#ccc"></span> All</div>
+              <div class="dd-item" onclick="setResultFilter('success');closeDD()"><span class="dd-dot" style="background:#27ae60"></span> Success</div>
+              <div class="dd-item" onclick="setResultFilter('errored');closeDD()"><span class="dd-dot" style="background:#e74c3c"></span> Errored</div>
+              <div class="dd-item" onclick="setResultFilter('apierr');closeDD()"><span class="dd-dot" style="background:#7b241c"></span> API Error</div>
+            </div>
+          </th>
           <th>Error</th>
         </tr>
       </thead>
@@ -264,6 +273,7 @@ let products     = [];
 let selectedIds  = new Set();
 let sortState    = { col: 'internalId', dir: 'asc' };
 let activeFilter = 'all';
+let resultFilter = 'all';
 let running      = false;
 let currentEnv   = 'nonprod';
 let cookie       = '';
@@ -873,12 +883,22 @@ function setFilter(f) {
   updateStats();
 }
 
+function setResultFilter(f) {
+  resultFilter = f;
+  const labels = { all: 'All', success: 'Success', errored: 'Errored', apierr: 'API Error' };
+  const btn = document.getElementById('resultFilterBtn');
+  if (btn) {
+    btn.textContent = labels[f] || 'All';
+    btn.className = 'th-filter-btn' + (f !== 'all' ? ' active' : '');
+  }
+  renderTable(); updateStats();
+}
+
 function getFiltered() {
   let list;
   switch (activeFilter) {
     case 'none':      list = products.filter(p => p.csStatus === 'none'); break;
     case 'inprocess': list = products.filter(p => p.csStatus === 'inprocess'); break;
-    case 'errors':     list = products.filter(p => p.lastResult === 'Errored' || p.csStatus === 'inprocess'); break;
     case 'completed':  list = products.filter(p => p.csStatus === 'completed'); break;
     default:          list = products;
   }
@@ -889,6 +909,10 @@ function getFiltered() {
     [...idFilter].some(term => p.productName?.toLowerCase().includes(term.toLowerCase())) ||
     [...idFilter].some(term => p.error?.toLowerCase().includes(term.toLowerCase()))
   );
+  if (resultFilter !== 'all') {
+    const map = { success: 'Success', errored: 'Errored', apierr: 'API Error' };
+    list = list.filter(p => p.lastResult === map[resultFilter]);
+  }
   const dateFrom = document.getElementById('dateFrom')?.value || '';
   const dateTo   = document.getElementById('dateTo')?.value   || '';
   if (dateFrom || dateTo) {
