@@ -150,7 +150,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.8</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.8.1</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -871,6 +871,79 @@ async function refreshOrphanCount() {
   }
 }
 
+async function deleteOrphanCs() {
+  if (running) return;
+  if (!confirm('Delete all orphan CS records (blank entityId)?\n\nThis removes garbage records only — no products are affected.')) return;
+
+  const btn = document.getElementById('btnDeleteOrphans');
+  if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
+
+  const orphanIds = [];
+  const seenCs = new Set();
+  let from = 1;
+  const PAGE = 2000;
+  try {
+    while (true) {
+      const body = {
+        _env: currentEnv,
+        params: {
+          query: { filters: {
+            typesCriterion: ['connectorstate'],
+            propertiesCriterion: [{ channelId: { exacts: ['app-shopify'] } }],
+            nonContextual: false,
+          }},
+          fields: { attributes: ['channelState'] },
+          options: { maxRecords: PAGE, from },
+        },
+      };
+      const resp = await fetch(`${API}/connectorstates`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      const objects = data?.dataObjectOperationResponse?.dataObjects
+                   || data?.response?.entities
+                   || data?.response?.dataObjects
+                   || [];
+      for (const obj of objects) {
+        const csId = obj?.id;
+        if (!csId || seenCs.has(csId)) continue;
+        seenCs.add(csId);
+        if (!obj?.properties?.entityId) orphanIds.push(csId);
+      }
+      if (btn) btn.textContent = `Deleting… (found ${orphanIds.length})`;
+      if (objects.length < PAGE) break;
+      from += PAGE;
+    }
+
+    const CHUNK = 20;
+    let deleted = 0, failed = 0;
+    for (let i = 0; i < orphanIds.length; i += CHUNK) {
+      const chunk = orphanIds.slice(i, i + CHUNK);
+      await Promise.all(chunk.map(async (csId) => {
+        try {
+          const resp = await fetch(`${API}/delete-cs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
+            body: JSON.stringify({ _env: currentEnv, csUuid: csId, entityUuid: '' }),
+          });
+          const data = await resp.json();
+          const status = data?.response?.status || data?.dataObjectOperationResponse?.status;
+          status === 'success' ? deleted++ : failed++;
+        } catch { failed++; }
+      }));
+      if (btn) btn.textContent = `Deleting… (${deleted + failed}/${orphanIds.length})`;
+    }
+
+    orphanCsCount = failed;
+    updateStats();
+    alert(`Deleted ${deleted} orphan CS records.${failed ? ` ${failed} failed.` : ''}`);
+  } catch (e) {
+    alert(`Error during orphan cleanup: ${e}`);
+    if (btn) { btn.disabled = false; btn.textContent = 'Delete all'; }
+  }
+}
+
 // ── Publish ───────────────────────────────────────────────────────────────────
 
 async function publishSelected() {
@@ -1453,7 +1526,7 @@ function updateStats() {
        <span class="${inprocess ? 'stat-warn' : ''}"><strong>${inprocess}</strong> in process</span>
        <span class="${errors ? 'stat-error' : ''}"><strong>${errors}</strong> errors</span>
        <span><strong>${selCount}</strong> selected</span>
-       ${orphanCsCount ? `<span style="color:#bbb;font-size:11px" title="Blank CS records with no entity ID — created by failed bulk publishes. Counted separately in background."><strong>${orphanCsCount}</strong> orphan CS</span>` : ''}
+       ${orphanCsCount ? `<span style="color:#bbb;font-size:11px" title="Blank CS records with no entity ID — created by failed bulk publishes. Counted separately in background."><strong>${orphanCsCount}</strong> orphan CS <button id="btnDeleteOrphans" onclick="deleteOrphanCs()" style="margin-left:4px;padding:1px 6px;font-size:10px;color:#c0392b;border:1px solid #ddd;border-radius:3px;background:#fff;cursor:pointer;font-weight:500">Delete all</button></span>` : ''}
        ${syncSummary ? `<span style="color:#8e44ad;font-size:11px;font-weight:600">${syncSummary}</span>` : ''}`;
 
   const anyFilter = activeFilter !== 'all' || resultFilter !== 'all' || idFilter.size > 0
