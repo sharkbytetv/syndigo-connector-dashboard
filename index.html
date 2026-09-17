@@ -63,6 +63,16 @@
     .progress-track { height: 6px; background: #eee; border-radius: 3px; }
     .progress-fill  { height: 100%; background: #A100FF; border-radius: 3px; transition: width 0.3s; }
     .progress-sub   { font-size: 11px; color: #888; margin-top: 6px; }
+    #batchLogToggle { font-size: 11px; color: #888; cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 4px; }
+    #batchLogToggle:hover { color: #555; }
+    #batchLogBody   { margin-top: 6px; overflow-x: auto; }
+    #batchLogTable  { width: 100%; border-collapse: collapse; font-size: 11px; font-family: monospace; }
+    #batchLogTable th { text-align: left; color: #999; font-weight: 600; border-bottom: 1px solid #eee; padding: 2px 8px 4px 0; }
+    #batchLogTable td { padding: 3px 8px 3px 0; color: #333; white-space: nowrap; }
+    #batchLogTable tr:nth-child(even) td { background: #fafafa; }
+    .bl-pending { color: #bbb; }
+    .bl-ok      { color: #27ae60; }
+    .bl-err     { color: #c0392b; }
 
     .table-wrap { flex: 1; overflow: auto; border: 1px solid #e0e0e0; border-radius: 6px; background: #fff; }
     table { width: 100%; border-collapse: collapse; min-width: 1100px; }
@@ -126,7 +136,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.3</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.4</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -197,6 +207,16 @@
     <div class="progress-label" id="progressLabel">Publishing…</div>
     <div class="progress-track"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
     <div class="progress-sub" id="progressSub"></div>
+  </div>
+
+  <div class="panel" id="batchLogPanel" style="display:none;padding:10px 14px">
+    <div id="batchLogToggle" onclick="toggleBatchLog()">▾ Batch log</div>
+    <div id="batchLogBody">
+      <table id="batchLogTable">
+        <thead><tr><th>#</th><th>Products</th><th>Fire</th><th>Poll done</th><th>Report</th></tr></thead>
+        <tbody id="batchLogTbody"></tbody>
+      </table>
+    </div>
   </div>
 
   <div class="table-wrap">
@@ -835,6 +855,7 @@ async function publishSelected() {
   running = true;
   document.getElementById('btnPublish').disabled = true;
   document.getElementById('progressPanel').style.display = 'block';
+  initBatchLog();
 
   const BATCH_SIZE  = 10;
   const CONCURRENCY = 3;
@@ -889,9 +910,12 @@ async function publishSelected() {
       const groupEnd = Math.min(g + CONCURRENCY, freshBatches.length);
       setProgress(doneUnits, totalUnits, `Batches ${g+1}–${groupEnd} of ${freshBatches.length} — firing…`);
 
-      const fired = await Promise.all(group.map(async (batch) => {
+      const fired = await Promise.all(group.map(async (batch, i) => {
         const entityIds = batch.map(p => p.entityUuid);
         const taskId    = crypto.randomUUID();
+        const batchNum  = g + i + 1;
+        const t0        = Date.now();
+        batchLogFire(batchNum, entityIds.length);
         try {
           const fireResp = await fetch(`${API}/publish`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -919,28 +943,38 @@ async function publishSelected() {
           });
           const fireResult = await fireResp.json().catch(() => ({}));
           const fireStatus = fireResult?.response?.status || fireResult?.dataObjectOperationResponse?.status;
+          const fireMs = Date.now() - t0;
           if (fireResp.status !== 200 || fireStatus !== 'success') {
+            batchLogSet(batchNum, 'fire', `${fireMs}ms ✗`, 'bl-err');
             const errMsg = `HTTP ${fireResp.status}: ${fireStatus || JSON.stringify(fireResult).substring(0, 80)}`;
             for (const p of batch) { p.lastResult = 'API Error'; p.error = errMsg; p.lastUpdated = new Date().toISOString(); }
-            return { batch, taskId: null };
+            return { batch, taskId: null, t0 };
           }
-          return { batch, taskId };
+          batchLogSet(batchNum, 'fire', `${fireMs}ms`, 'bl-ok');
+          return { batch, taskId, t0 };
         } catch (e) {
+          batchLogSet(batchNum, 'fire', 'err', 'bl-err');
           for (const p of batch) { p.lastResult = 'API Error'; p.error = String(e); p.lastUpdated = new Date().toISOString(); }
-          return { batch, taskId: null };
+          return { batch, taskId: null, t0 };
         }
       }));
 
       setProgress(doneUnits, totalUnits, `Batches ${g+1}–${groupEnd} of ${freshBatches.length} — waiting…`);
-      const polled = await Promise.all(fired.map(async ({ batch, taskId }) => {
-        if (!taskId) return { batch, taskId: null, completedTime: null };
+      const polled = await Promise.all(fired.map(async ({ batch, taskId, t0 }, i) => {
+        if (!taskId) return { batch, taskId: null, completedTime: null, t0 };
+        const batchNum = g + i + 1;
+        batchLogSet(batchNum, 'poll', '…', 'bl-pending');
         const { completedTime } = await pollTask(taskId);
-        return { batch, taskId, completedTime };
+        batchLogSet(batchNum, 'poll', `${((Date.now() - t0)/1000).toFixed(1)}s`, 'bl-ok');
+        return { batch, taskId, completedTime, t0 };
       }));
 
-      await Promise.all(polled.map(async ({ batch, taskId, completedTime }) => {
+      await Promise.all(polled.map(async ({ batch, taskId, completedTime, t0 }, i) => {
         if (!taskId) return;
+        const batchNum = g + i + 1;
+        batchLogSet(batchNum, 'report', '…', 'bl-pending');
         const csvText = await fetchReport(taskId);
+        batchLogSet(batchNum, 'report', `${((Date.now() - t0)/1000).toFixed(1)}s`, csvText ? 'bl-ok' : 'bl-err');
         if (csvText) applyReport(csvText, completedTime);
         else if (completedTime) { const ts = new Date(completedTime).toISOString(); for (const p of batch) p.lastUpdated = ts; }
       }));
@@ -1274,6 +1308,42 @@ function updateStats() {
 }
 
 // ── Progress ──────────────────────────────────────────────────────────────────
+
+let batchLogOpen = true;
+
+function initBatchLog() {
+  document.getElementById('batchLogTbody').innerHTML = '';
+  document.getElementById('batchLogPanel').style.display = 'block';
+  batchLogOpen = true;
+  document.getElementById('batchLogBody').style.display = 'block';
+  document.getElementById('batchLogToggle').textContent = '▾ Batch log';
+}
+
+function toggleBatchLog() {
+  batchLogOpen = !batchLogOpen;
+  document.getElementById('batchLogBody').style.display = batchLogOpen ? 'block' : 'none';
+  document.getElementById('batchLogToggle').textContent = (batchLogOpen ? '▾' : '▸') + ' Batch log';
+}
+
+function batchLogFire(batchNum, productCount) {
+  const tbody = document.getElementById('batchLogTbody');
+  const tr = document.createElement('tr');
+  tr.id = `bl-row-${batchNum}`;
+  tr.innerHTML = `
+    <td>${batchNum}</td>
+    <td>${productCount}</td>
+    <td id="bl-fire-${batchNum}" class="bl-pending">…</td>
+    <td id="bl-poll-${batchNum}" class="bl-pending">—</td>
+    <td id="bl-report-${batchNum}" class="bl-pending">—</td>`;
+  tbody.appendChild(tr);
+}
+
+function batchLogSet(batchNum, field, text, cls) {
+  const el = document.getElementById(`bl-${field}-${batchNum}`);
+  if (!el) return;
+  el.textContent = text;
+  el.className = cls || '';
+}
 
 function setProgress(done, total, label) {
   document.getElementById('progressFill').style.width  = `${total > 0 ? Math.round((done/total)*100) : 0}%`;
