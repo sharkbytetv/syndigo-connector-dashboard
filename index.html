@@ -126,7 +126,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.8.1</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.9</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -256,6 +256,8 @@
 <div class="bottom-bar">
   <button onclick="selectAllFiltered()">Select All</button>
   <button onclick="deselectAll()">Deselect All</button>
+  <button id="btnPinSelected" style="display:none" onclick="pinSelected=!pinSelected;renderTable()">↑ Selected first</button>
+  <button id="btnClearFilters" style="display:none" onclick="clearFilters()">Clear Filters</button>
   <div class="spacer"></div>
   <button class="btn-danger" id="btnDeleteCs" onclick="deleteSelectedCs()" disabled>Delete CS (0)</button>
   <button class="btn-primary" id="btnPublish" onclick="publishSelected()" disabled>Publish Selected (0)</button>
@@ -283,6 +285,8 @@ let shopifyStore   = '';
 let idFilter = new Set();
 let masterSkuMap = new Map();
 let exportFormat = localStorage.getItem('syndigo_export_format') || 'csv';
+let orphanCsCount = 0;
+let pinSelected = false;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -614,6 +618,7 @@ async function loadConnectorStates() {
   let from = 1;
   const PAGE = 200;
   const csMap = {};
+  orphanCsCount = 0;
 
   try {
     while (true) {
@@ -626,6 +631,7 @@ async function loadConnectorStates() {
             nonContextual: false,
           }},
           fields: { attributes: ['channelState', 'productId', 'bulkOpId'] },
+          sort: [{ attribute: 'createdDate', sortType: 'desc' }],
           options: { maxRecords: PAGE, from },
         },
       };
@@ -642,7 +648,8 @@ async function loadConnectorStates() {
 
       for (const obj of objects) {
         const eid = obj?.properties?.entityId;
-        if (!eid) continue;
+        if (!eid) { orphanCsCount++; continue; }
+        if (csMap[eid]) continue; // first-wins: DESC sort means first seen = newest
         csMap[eid] = {
           channelState: obj?.data?.attributes?.channelState?.values?.[0]?.value || 'unknown',
           productId:    obj?.properties?.productId || obj?.data?.attributes?.productId?.values?.[0]?.value || '',
@@ -894,6 +901,20 @@ function setResultFilter(f) {
   renderTable(); updateStats();
 }
 
+function clearFilters() {
+  setFilter('all');
+  setResultFilter('all');
+  const s = document.getElementById('idSearch');
+  if (s) { s.value = ''; applyIdSearch(); }
+  const df = document.getElementById('dateFrom');
+  const dt = document.getElementById('dateTo');
+  if (df) df.value = '';
+  if (dt) dt.value = '';
+  const dfb = document.getElementById('dateFilterBtn');
+  if (dfb) { dfb.textContent = 'Any date'; dfb.className = 'th-filter-btn'; }
+  renderTable(); updateStats();
+}
+
 function getFiltered() {
   let list;
   switch (activeFilter) {
@@ -936,13 +957,23 @@ function toggleSelectAll(checked) {
 
 function toggleRow(uuid, checked) { checked ? selectedIds.add(uuid) : selectedIds.delete(uuid); updateStats(); }
 function selectAllFiltered() { getFiltered().forEach(p => selectedIds.add(p.entityUuid)); renderTable(); updateStats(); }
-function deselectAll() { selectedIds.clear(); renderTable(); updateStats(); }
+function deselectAll() { selectedIds.clear(); pinSelected = false; renderTable(); updateStats(); }
 
 // ── Render ────────────────────────────────────────────────────────────────────
 
 function renderTable() {
   const tbody    = document.getElementById('tableBody');
-  const filtered = sorted(getFiltered());
+  const base     = getFiltered();
+  const filtered = pinSelected && selectedIds.size
+    ? [...sorted(base.filter(p => selectedIds.has(p.entityUuid))),
+       ...sorted(base.filter(p => !selectedIds.has(p.entityUuid)))]
+    : sorted(base);
+  const pinBtn = document.getElementById('btnPinSelected');
+  if (pinBtn) {
+    pinBtn.style.display = selectedIds.size ? '' : 'none';
+    pinBtn.className = pinSelected ? 'btn-primary' : '';
+    pinBtn.textContent = `↑ Selected first (${selectedIds.size})`;
+  }
   const cols     = [null,'internalId','productName','brand','entityUuid','shopifyGid','csStatus','lastUpdated','lastResult',null];
 
   document.querySelectorAll('thead th').forEach((th, i) => {
@@ -1025,7 +1056,13 @@ function updateStats() {
        <span class="${noCS ? 'stat-warn' : ''}"><strong>${noCS}</strong> no CS</span>
        <span class="${inprocess ? 'stat-warn' : ''}"><strong>${inprocess}</strong> in process</span>
        <span class="${errors ? 'stat-error' : ''}"><strong>${errors}</strong> errors</span>
-       <span><strong>${selCount}</strong> selected</span>`;
+       <span><strong>${selCount}</strong> selected</span>
+       ${orphanCsCount ? `<span style="color:#bbb;font-size:11px" title="Incomplete CS records with no entity ID — likely from failed publish batches"><strong>${orphanCsCount}</strong> incomplete CS</span>` : ''}`;
+
+  const anyFilter = activeFilter !== 'all' || resultFilter !== 'all' || idFilter.size > 0
+    || document.getElementById('dateFrom')?.value || document.getElementById('dateTo')?.value;
+  const cfBtn = document.getElementById('btnClearFilters');
+  if (cfBtn) cfBtn.style.display = anyFilter ? '' : 'none';
 
   const btn = document.getElementById('btnPublish');
   btn.textContent = `Publish Selected (${selCount})`;
