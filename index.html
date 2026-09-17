@@ -126,7 +126,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.10</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.0</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -164,7 +164,8 @@
           <button class="import-caret" onclick="event.stopPropagation();toggleDD('importMenu')">▾</button>
         </div>
         <div class="dd-menu" id="importMenu">
-          <div class="dd-item" onclick="closeDD();document.getElementById('fileInput').click()">📄 Syndigo export</div>
+          <div class="dd-item" onclick="closeDD();loadFromSyndigo()">⟳ Sync products from Syndigo</div>
+          <div class="dd-item" onclick="closeDD();document.getElementById('fileInput').click()">📄 Syndigo export (file)</div>
           <div class="dd-item" onclick="closeDD();document.getElementById('shopifyFileInput').click()">🛍 Shopify export — backfill GIDs</div>
           <div class="dd-item" onclick="closeDD();document.getElementById('masterRegInput').click()">📋 Master register — SKU map</div>
         </div>
@@ -240,6 +241,8 @@
               <div class="dd-item" onclick="setResultFilter('success');closeDD()"><span class="dd-dot" style="background:#27ae60"></span> Success</div>
               <div class="dd-item" onclick="setResultFilter('errored');closeDD()"><span class="dd-dot" style="background:#e74c3c"></span> Errored</div>
               <div class="dd-item" onclick="setResultFilter('apierr');closeDD()"><span class="dd-dot" style="background:#7b241c"></span> API Error</div>
+              <div class="dd-item" onclick="setResultFilter('cscreated');closeDD()"><span class="dd-dot" style="background:#8e44ad"></span> CS Created</div>
+              <div class="dd-item" onclick="setResultFilter('cserror');closeDD()"><span class="dd-dot" style="background:#6c3483"></span> CS Error</div>
             </div>
           </th>
           <th>Error</th>
@@ -287,6 +290,8 @@ let masterSkuMap = new Map();
 let exportFormat = localStorage.getItem('syndigo_export_format') || 'csv';
 let orphanCsCount = 0;
 let pinSelected = false;
+let syncSummary = '';
+let newEntityIds = new Set();
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -607,6 +612,90 @@ async function handleMasterReg(input) {
   input.value = '';
 }
 
+async function loadFromSyndigo() {
+  if (running) return;
+  const importBtn = document.querySelector('.import-main');
+  if (importBtn) { importBtn.disabled = true; importBtn.textContent = 'Syncing…'; }
+
+  try {
+    const PAGE = 200;
+    const makeBody = (from) => JSON.stringify({
+      _env: currentEnv,
+      params: {
+        query: {
+          filters: { typesCriterion: ['product'] },
+          valueContexts: [{ source: 'internal', locale: 'en-US' }],
+        },
+        fields: { attributes: ['thgproductname', 'thgbrandname'] },
+        options: { maxRecords: PAGE, from },
+      },
+    });
+
+    const firstResp = await fetch(`${API}/entities`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: makeBody(1),
+    });
+    const firstData = await firstResp.json();
+    const total         = firstData?.response?.totalRecords || 0;
+    const firstEntities = firstData?.response?.entities    || [];
+
+    if (importBtn) importBtn.textContent = `Syncing… (${firstEntities.length}/${total})`;
+
+    const froms = [];
+    for (let from = PAGE + 1; from <= total; from += PAGE) froms.push(from);
+
+    const restEntities = (await Promise.all(froms.map(async (from) => {
+      const resp = await fetch(`${API}/entities`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: makeBody(from),
+      });
+      const data = await resp.json();
+      return data?.response?.entities || [];
+    }))).flat();
+
+    const allEntities = [...firstEntities, ...restEntities];
+
+    const prev = {};
+    for (const p of products) prev[p.entityUuid] = p;
+    const prevIds = new Set(Object.keys(prev));
+
+    products = allEntities.map(entity => {
+      const p = prev[entity.id] || {};
+      return {
+        internalId:  entity.name,
+        entityUuid:  entity.id,
+        productName: entity?.data?.attributes?.thgproductname?.values?.[0]?.value || '',
+        brand:       entity?.data?.attributes?.thgbrandname?.values?.[0]?.value   || '',
+        shopifyGid:  p.shopifyGid  || '',
+        lastResult:  p.lastResult  || '',
+        lastUpdated: p.lastUpdated || '',
+        error:       p.error       || '',
+        csStatus:    p.csStatus    || 'none',
+        csUuid:      p.csUuid      || '',
+      };
+    });
+
+    const newIds  = new Set(products.map(p => p.entityUuid));
+    const added   = products.filter(p => !prevIds.has(p.entityUuid)).length;
+    const removed = [...prevIds].filter(id => !newIds.has(id)).length;
+    const parts   = [];
+    if (added)   parts.push(`+${added} new`);
+    if (removed) parts.push(`−${removed} removed`);
+    syncSummary  = parts.length
+      ? parts.join(', ') + ` product${added + removed > 1 ? 's' : ''}`
+      : prevIds.size === 0 ? `${products.length} products loaded` : 'No changes';
+    newEntityIds = new Set(products.filter(p => !prevIds.has(p.entityUuid)).map(p => p.entityUuid));
+    setTimeout(() => { syncSummary = ''; newEntityIds = new Set(); updateStats(); renderTable(); }, 8000);
+
+    renderTable();
+    updateStats();
+    await loadConnectorStates();
+
+  } finally {
+    if (importBtn) { importBtn.disabled = false; importBtn.textContent = '↑ Import'; }
+  }
+}
+
 // ── Connector States ──────────────────────────────────────────────────────────
 
 async function loadConnectorStates() {
@@ -614,57 +703,54 @@ async function loadConnectorStates() {
   const btn = document.getElementById('btnLoadCS');
   btn.disabled = true;
   btn.textContent = 'Loading…';
-
-  let from = 1;
-  const PAGE = 200;
-  const csMap = {};
-  const seenCs = new Set();
   orphanCsCount = 0;
 
   try {
-    while (true) {
+    const CHUNK = 200;
+    const entityIds = products.map(p => p.entityUuid).filter(Boolean);
+    const csMap = {};
+
+    const chunks = [];
+    for (let i = 0; i < entityIds.length; i += CHUNK) chunks.push(entityIds.slice(i, i + CHUNK));
+
+    const allObjects = (await Promise.all(chunks.map(async (chunk) => {
       const body = {
         _env: currentEnv,
         params: {
           query: { filters: {
             typesCriterion: ['connectorstate'],
-            propertiesCriterion: [{ channelId: { exacts: ['app-shopify'] } }],
+            propertiesCriterion: [
+              { channelId: { exacts: ['app-shopify'] } },
+              { entityId:  { exacts: chunk } },
+            ],
             nonContextual: false,
           }},
           fields: { attributes: ['channelState', 'productId', 'bulkOpId'] },
-          sort: [{ attribute: 'createdDate', sortType: 'desc' }],
-          options: { maxRecords: PAGE, from },
+          options: { maxRecords: CHUNK, from: 1 },
         },
       };
-
       const resp = await fetch(`${API}/connectorstates`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       const data = await resp.json();
-      const objects = data?.dataObjectOperationResponse?.dataObjects
-                   || data?.response?.entities
-                   || data?.response?.dataObjects
-                   || [];
+      return data?.dataObjectOperationResponse?.dataObjects
+          || data?.response?.entities
+          || data?.response?.dataObjects
+          || [];
+    }))).flat();
 
-      for (const obj of objects) {
-        const csId = obj?.id;
-        if (csId && seenCs.has(csId)) continue;
-        if (csId) seenCs.add(csId);
-        const eid = obj?.properties?.entityId;
-        if (!eid) { orphanCsCount++; continue; }
-        if (csMap[eid]) continue; // first-wins: DESC sort means first seen = newest
-        csMap[eid] = {
-          channelState: obj?.data?.attributes?.channelState?.values?.[0]?.value || 'unknown',
-          productId:    obj?.properties?.productId || obj?.data?.attributes?.productId?.values?.[0]?.value || '',
-          csUuid:       obj?.id || '',
-        };
-      }
-
-      btn.textContent = `Loading… (${Object.keys(csMap).length})`;
-      if (objects.length < PAGE) break;
-      from += PAGE;
+    for (const obj of allObjects) {
+      const eid = obj?.properties?.entityId;
+      if (!eid || csMap[eid]) continue;
+      csMap[eid] = {
+        channelState: obj?.data?.attributes?.channelState?.values?.[0]?.value || 'unknown',
+        productId:    obj?.properties?.productId || obj?.data?.attributes?.productId?.values?.[0]?.value || '',
+        csUuid:       obj?.id || '',
+      };
     }
+
+    btn.textContent = `Loading… (${Object.keys(csMap).length})`;
 
     for (const p of products) {
       const cs = csMap[p.entityUuid];
@@ -997,7 +1083,7 @@ function getFiltered() {
     [...idFilter].some(term => p.error?.toLowerCase().includes(term.toLowerCase()))
   );
   if (resultFilter !== 'all') {
-    const map = { success: 'Success', errored: 'Errored', apierr: 'API Error' };
+    const map = { success: 'Success', errored: 'Errored', apierr: 'API Error', cscreated: 'CS Created', cserror: 'CS Error' };
     list = list.filter(p => p.lastResult === map[resultFilter]);
   }
   const dateFrom = document.getElementById('dateFrom')?.value || '';
@@ -1033,6 +1119,9 @@ function renderTable() {
   const filtered = pinSelected && selectedIds.size
     ? [...sorted(base.filter(p => selectedIds.has(p.entityUuid))),
        ...sorted(base.filter(p => !selectedIds.has(p.entityUuid)))]
+    : newEntityIds.size
+    ? [...sorted(base.filter(p => newEntityIds.has(p.entityUuid))),
+       ...sorted(base.filter(p => !newEntityIds.has(p.entityUuid)))]
     : sorted(base);
   const pinBtn = document.getElementById('btnPinSelected');
   if (pinBtn) {
@@ -1050,7 +1139,7 @@ function renderTable() {
   if (!filtered.length) {
     tbody.innerHTML = `<tr><td colspan="10"><div class="empty-state">
       <h3>${products.length ? 'No products match this filter' : 'No products loaded'}</h3>
-      ${products.length ? '' : '<p>Import a Syndigo product export to get started</p>'}
+      ${products.length ? '' : '<p>Use ↑ Import → Sync products from Syndigo to get started</p>'}
     </div></td></tr>`;
     document.getElementById('selectAll').checked = false;
     document.getElementById('selectAll').indeterminate = false;
@@ -1123,7 +1212,8 @@ function updateStats() {
        <span class="${inprocess ? 'stat-warn' : ''}"><strong>${inprocess}</strong> in process</span>
        <span class="${errors ? 'stat-error' : ''}"><strong>${errors}</strong> errors</span>
        <span><strong>${selCount}</strong> selected</span>
-       ${orphanCsCount ? `<span style="color:#bbb;font-size:11px" title="Incomplete CS records with no entity ID — likely from failed publish batches"><strong>${orphanCsCount}</strong> incomplete CS</span>` : ''}`;
+       ${orphanCsCount ? `<span style="color:#bbb;font-size:11px" title="Incomplete CS records with no entity ID — likely from failed publish batches"><strong>${orphanCsCount}</strong> incomplete CS</span>` : ''}
+       ${syncSummary ? `<span style="color:#8e44ad;font-size:11px;font-weight:600">${syncSummary}</span>` : ''}`;
 
   const anyFilter = activeFilter !== 'all' || resultFilter !== 'all' || idFilter.size > 0
     || document.getElementById('dateFrom')?.value || document.getElementById('dateTo')?.value;
