@@ -104,7 +104,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.3</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.4</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -206,6 +206,7 @@
   <button onclick="selectAllFiltered()">Select All</button>
   <button onclick="deselectAll()">Deselect All</button>
   <div class="spacer"></div>
+  <button class="btn-danger" id="btnDeleteCs" onclick="deleteSelectedCs()" disabled>Delete CS (0)</button>
   <button class="btn-primary" id="btnPublish" onclick="publishSelected()" disabled>Publish Selected (0)</button>
 </div>
 
@@ -523,6 +524,7 @@ async function loadConnectorStates() {
         csMap[eid] = {
           channelState: obj?.data?.attributes?.channelState?.values?.[0]?.value || 'unknown',
           productId:    obj?.properties?.productId || obj?.data?.attributes?.productId?.values?.[0]?.value || '',
+          csUuid:       obj?.id || '',
         };
       }
 
@@ -534,10 +536,12 @@ async function loadConnectorStates() {
     for (const p of products) {
       const cs = csMap[p.entityUuid];
       if (cs) {
-        p.csStatus = cs.channelState;
+        p.csStatus   = cs.channelState;
+        p.csUuid     = cs.csUuid;
         if (cs.productId && !p.shopifyGid) p.shopifyGid = cs.productId;
       } else {
         p.csStatus = 'none';
+        p.csUuid   = '';
       }
     }
 
@@ -678,6 +682,38 @@ function applyReport(csvText, completedTime) {
     if (gid && gid !== 'N/A') { p.shopifyGid = gid; p.csStatus = 'completed'; p.error = ''; }
     else { p.error = (row['Error/Message'] || '').trim(); }
   }
+}
+
+// ── Delete connector states ───────────────────────────────────────────────────
+
+async function deleteSelectedCs() {
+  if (running) return;
+  const targets = getFiltered().filter(p => selectedIds.has(p.entityUuid) && p.csUuid);
+  if (!targets.length) { alert('No selected products have a connector state to delete.'); return; }
+  if (!confirm(`Delete connector states for ${targets.length} product(s)?\n\nThis cannot be undone. The connector will treat them as net-new on the next publish.`)) return;
+
+  running = true;
+  document.getElementById('btnDeleteCs').disabled = true;
+  let deleted = 0, failed = 0;
+
+  for (const p of targets) {
+    try {
+      const resp = await fetch(`${API}/delete-cs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
+        body: JSON.stringify({ _env: currentEnv, csUuid: p.csUuid, entityUuid: p.entityUuid }),
+      });
+      const data = await resp.json();
+      const status = data?.response?.status || data?.dataObjectOperationResponse?.status;
+      if (status === 'success') { p.csStatus = 'none'; p.csUuid = ''; p.shopifyGid = ''; deleted++; }
+      else failed++;
+    } catch { failed++; }
+  }
+
+  running = false;
+  renderTable(); updateStats(); saveToKV();
+  alert(`Deleted: ${deleted}  Failed: ${failed}`);
+  document.getElementById('btnDeleteCs').disabled = selectedIds.size === 0;
 }
 
 // ── Clear ─────────────────────────────────────────────────────────────────────
@@ -855,6 +891,10 @@ function updateStats() {
   const btn = document.getElementById('btnPublish');
   btn.textContent = `Publish Selected (${selCount})`;
   btn.disabled = selCount === 0 || running;
+
+  const btnDel = document.getElementById('btnDeleteCs');
+  if (btnDel) btnDel.textContent = `Delete CS (${selCount})`;
+  if (btnDel) btnDel.disabled = selCount === 0 || running;
 }
 
 // ── Progress ──────────────────────────────────────────────────────────────────

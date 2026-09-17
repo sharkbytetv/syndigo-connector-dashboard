@@ -58,6 +58,7 @@ export default {
       if (path === '/api/products' && request.method === 'GET')  return await getProducts(request, env);
       if (path === '/api/products' && request.method === 'POST') return await saveProducts(request, env);
       if (path === '/api/config') return await getConfig(request, env);
+      if (path === '/api/delete-cs') return await deleteCs(request, env);
       if (path === '/api/connectorstates') return await connectorStates(request, env);
       if (path === '/api/publish')         return await publish(request, env);
       if (path === '/api/status')          return await status(request, env);
@@ -129,6 +130,31 @@ async function publish(request, env) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+  });
+  return ok(await r.text());
+}
+
+async function deleteCs(request, env) {
+  // Destructive and authenticated only by the Worker's own client credentials, so gate it on the team secret.
+  if (request.headers.get('x-kv-secret') !== env.KV_SECRET) return err('Unauthorized', 401);
+  const body     = await request.json();
+  const c        = cfg(body._env, env);
+  const csUuid   = body.csUuid;
+  const entityUuid = body.entityUuid;
+
+  const r = await fetch(`${c.baseUrl}/api/genericobjectmanageservice/delete`, {
+    method: 'POST',
+    headers: { ...staticHeaders(c), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ genericObject: {
+      id:   csUuid,
+      type: 'connectorstate',
+      properties: {
+        tenantId:   c.tenant,
+        channelId:  'app-shopify',
+        entityId:   entityUuid,
+        entityType: 'product',
+      },
+    }}),
   });
   return ok(await r.text());
 }
