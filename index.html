@@ -150,7 +150,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.8.2</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.8.3</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -938,13 +938,13 @@ async function deleteOrphanCs() {
     }
 
     orphanCsCount = failed;
-    updateStats();
     alert(`Deleted ${deleted} orphan CS records.${failed ? ` ${failed} failed.` : ''}`);
   } catch (e) {
     alert(`Error during orphan cleanup: ${e}`);
     if (btn) { btn.disabled = false; btn.textContent = 'Delete all'; }
   } finally {
     running = false;
+    updateStats();
   }
 }
 
