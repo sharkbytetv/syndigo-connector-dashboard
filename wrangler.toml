@@ -1,0 +1,19 @@
+name = "syndigo-connector-api"
+main = "worker.js"
+compatibility_date = "2024-09-01"
+
+# Environment-specific config lives in the Cloudflare dashboard, not in this file.
+# keep_vars prevents `wrangler deploy` from wiping dashboard-defined vars.
+keep_vars = true
+
+# Vars (Settings → Variables and Secrets):
+#   PROD_BASE_URL       e.g. https://<prod-tenant>.syndigo.com
+#   NONPROD_BASE_URL    e.g. https://<nonprod-tenant>.syndigo.com
+#
+# Secrets — set via CLI or dashboard, never stored in this file:
+#   wrangler secret put PROD_TENANT
+#   wrangler secret put PROD_CLIENT_ID
+#   wrangler secret put PROD_CLIENT_SECRET
+#   wrangler secret put NONPROD_TENANT
+#   wrangler secret put NONPROD_CLIENT_ID
+#   wrangler secret put NONPROD_CLIENT_SECRET
