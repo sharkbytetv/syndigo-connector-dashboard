@@ -104,7 +104,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5.1</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5.2</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -169,7 +169,7 @@
       </div>
       <div class="sep"></div>
       <div style="display:flex;gap:6px;align-items:center">
-        <input type="text" id="idSearch" placeholder="Filter by product ID, Shopify ID, or name…"
+        <input type="text" id="idSearch" placeholder="Filter by product ID, Shopify ID, name, or error…"
           style="width:280px;padding:5px 10px;border:1px solid #ddd;border-radius:4px;font-size:12px"
           oninput="applyIdSearch()" />
         <button onclick="document.getElementById('idSearch').value='';applyIdSearch()">✕</button>
@@ -849,7 +849,8 @@ function getFiltered() {
     idFilter.has(p.internalId) ||
     idFilter.has(p.shopifyGid) ||
     idFilter.has(p.shopifyGid?.replace('gid://shopify/Product/', '')) ||
-    [...idFilter].some(term => p.productName?.toLowerCase().includes(term.toLowerCase()))
+    [...idFilter].some(term => p.productName?.toLowerCase().includes(term.toLowerCase())) ||
+    [...idFilter].some(term => p.error?.toLowerCase().includes(term.toLowerCase()))
   );
   const dateFrom = document.getElementById('dateFrom')?.value;
   const dateTo   = document.getElementById('dateTo')?.value;
