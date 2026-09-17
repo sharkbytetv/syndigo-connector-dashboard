@@ -138,7 +138,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.6</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.6.1</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -344,6 +344,7 @@ function setEnv(env) {
   applyEnvUI();
   restoreCookie();
   products = [];
+  importTs = {};
   selectedIds.clear();
   renderTable();
   updateStats();
@@ -721,9 +722,9 @@ async function loadFromSyndigo() {
     renderTable();
     updateStats();
     await loadConnectorStates();
+    setIts('syndigo'); refreshImportTimestamps(); saveToKV();
 
   } finally {
-    setIts('syndigo'); refreshImportTimestamps(); saveToKV();
     if (importBtn) { importBtn.disabled = false; importBtn.textContent = '↑ Import'; }
   }
 }
@@ -797,10 +798,10 @@ async function loadConnectorStates() {
 
     renderTable();
     updateStats();
+    setIts('cs'); refreshImportTimestamps();
     saveToKV();
     refreshOrphanCount(); // background — doesn't block
   } finally {
-    setIts('cs'); refreshImportTimestamps(); saveToKV();
     btn.disabled = false;
     btn.textContent = 'Refresh CS Status';
   }
