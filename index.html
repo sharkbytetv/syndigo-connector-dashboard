@@ -126,7 +126,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.1</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.2</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -289,6 +289,7 @@ let idFilter = new Set();
 let masterSkuMap = new Map();
 let exportFormat = localStorage.getItem('syndigo_export_format') || 'csv';
 let pinSelected = false;
+let orphanCsCount = 0;
 let syncSummary = '';
 let newEntityIds = new Set();
 
@@ -765,10 +766,47 @@ async function loadConnectorStates() {
     renderTable();
     updateStats();
     saveToKV();
+    refreshOrphanCount(); // background — doesn't block
   } finally {
     btn.disabled = false;
     btn.textContent = 'Refresh CS Status';
   }
+}
+
+async function refreshOrphanCount() {
+  let from = 1;
+  const PAGE = 2000;
+  let count = 0;
+  while (true) {
+    const body = {
+      _env: currentEnv,
+      params: {
+        query: { filters: {
+          typesCriterion: ['connectorstate'],
+          propertiesCriterion: [{ channelId: { exacts: ['app-shopify'] } }],
+          nonContextual: false,
+        }},
+        fields: { attributes: ['channelState'] },
+        options: { maxRecords: PAGE, from },
+      },
+    };
+    const resp = await fetch(`${API}/connectorstates`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    const objects = data?.dataObjectOperationResponse?.dataObjects
+                 || data?.response?.entities
+                 || data?.response?.dataObjects
+                 || [];
+    for (const obj of objects) {
+      if (!obj?.properties?.entityId) count++;
+    }
+    if (objects.length < PAGE) break;
+    from += PAGE;
+  }
+  orphanCsCount = count;
+  updateStats();
 }
 
 // ── Publish ───────────────────────────────────────────────────────────────────
@@ -1210,6 +1248,7 @@ function updateStats() {
        <span class="${inprocess ? 'stat-warn' : ''}"><strong>${inprocess}</strong> in process</span>
        <span class="${errors ? 'stat-error' : ''}"><strong>${errors}</strong> errors</span>
        <span><strong>${selCount}</strong> selected</span>
+       ${orphanCsCount ? `<span style="color:#bbb;font-size:11px" title="Blank CS records with no entity ID — created by failed bulk publishes. Counted separately in background."><strong>${orphanCsCount}</strong> orphan CS</span>` : ''}
        ${syncSummary ? `<span style="color:#8e44ad;font-size:11px;font-weight:600">${syncSummary}</span>` : ''}`;
 
   const anyFilter = activeFilter !== 'all' || resultFilter !== 'all' || idFilter.size > 0
