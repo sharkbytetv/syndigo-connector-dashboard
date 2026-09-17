@@ -104,7 +104,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.4</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -139,6 +139,22 @@
         ondragleave="this.style.borderColor='#ddd';this.style.color='#888'"
         ondrop="event.preventDefault();this.style.borderColor='#ddd';this.style.color='#888';const f=event.dataTransfer.files[0];if(f){const i=document.getElementById('fileInput');const dt=new DataTransfer();dt.items.add(f);i.files=dt.files;handleFile(i);}">
         Drop Syndigo export here or click to browse
+      </div>
+      <input type="file" id="shopifyFileInput" accept=".xlsx,.csv" style="display:none" onchange="handleShopifyFile(this)" />
+      <div onclick="document.getElementById('shopifyFileInput').click()"
+        style="border:2px dashed #ddd;border-radius:4px;padding:8px 16px;font-size:12px;color:#888;cursor:pointer;transition:all 0.15s;white-space:nowrap"
+        ondragover="event.preventDefault();this.style.borderColor='#27ae60';this.style.color='#27ae60'"
+        ondragleave="this.style.borderColor='#ddd';this.style.color='#888'"
+        ondrop="event.preventDefault();this.style.borderColor='#ddd';this.style.color='#888';const f=event.dataTransfer.files[0];if(f){const i=document.getElementById('shopifyFileInput');const dt=new DataTransfer();dt.items.add(f);i.files=dt.files;handleShopifyFile(i);}">
+        Drop Shopify export to backfill GIDs
+      </div>
+      <input type="file" id="masterRegInput" accept=".xlsx" style="display:none" onchange="handleMasterReg(this)" />
+      <div onclick="document.getElementById('masterRegInput').click()"
+        style="border:2px dashed #ddd;border-radius:4px;padding:8px 16px;font-size:12px;color:#888;cursor:pointer;transition:all 0.15s;white-space:nowrap"
+        ondragover="event.preventDefault();this.style.borderColor='#224BFF';this.style.color='#224BFF'"
+        ondragleave="this.style.borderColor='#ddd';this.style.color='#888'"
+        ondrop="event.preventDefault();this.style.borderColor='#ddd';this.style.color='#888';const f=event.dataTransfer.files[0];if(f){const i=document.getElementById('masterRegInput');const dt=new DataTransfer();dt.items.add(f);i.files=dt.files;handleMasterReg(i);}">
+        Drop Master Register (SKU map)
       </div>
       <button onclick="loadConnectorStates()" id="btnLoadCS">Refresh CS Status</button>
       <div class="sep"></div>
@@ -229,6 +245,7 @@ let kvSecret     = '';
 let syndigoBaseUrl = '';
 let shopifyStore   = '';
 let idFilter = new Set();
+let masterSkuMap = new Map();
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -479,6 +496,65 @@ function mergeImport(incoming) {
   document.getElementById('headerStatus').textContent = `${products.length} products`;
   alert(`Imported ${incoming.length} products. Total: ${products.length}.`);
   saveToKV();
+}
+
+async function handleShopifyFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const buf  = await file.arrayBuffer();
+  const wb   = XLSX.read(buf, { cellDates: true });
+  const ws   = wb.Sheets['Products'] || wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+  const PRODUCT_ID_COL = 'Metafield: custom.product_id [single_line_text_field]';
+  const seen   = new Set();
+  const gidMap = {};
+
+  for (const row of rows) {
+    const shopifyId  = String(row['ID']           || '').trim();
+    const variantSku = String(row['Variant SKU']  || '').trim();
+    let   internalId = String(row[PRODUCT_ID_COL] || '').trim();
+
+    if (!internalId && variantSku && masterSkuMap.has(variantSku))
+      internalId = masterSkuMap.get(variantSku);
+
+    if (!shopifyId || !internalId || seen.has(shopifyId)) continue;
+    seen.add(shopifyId);
+    gidMap[internalId] = `gid://shopify/Product/${shopifyId}`;
+  }
+
+  let updated = 0;
+  for (const p of products) {
+    if (gidMap[p.internalId]) { p.shopifyGid = gidMap[p.internalId]; updated++; }
+  }
+
+  if (!updated) { alert('No matches found. If custom.product_id metafield is missing, drop the Master Register first to enable SKU fallback.'); return; }
+  alert(`Backfilled ${updated} products with Shopify GIDs.`);
+  renderTable(); updateStats(); saveToKV();
+  input.value = '';
+}
+
+async function handleMasterReg(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const buf  = await file.arrayBuffer();
+  const wb   = XLSX.read(buf, { cellDates: true });
+  const ws   = wb.Sheets['Issued'] || wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  // Row 1 = title, Row 2 = section headers, Row 3 = actual column headers, data from Row 4
+  const headers = rows[2].map(h => String(h).trim());
+  const pidIdx  = headers.indexOf('BBB Product ID');
+  const skuIdx  = headers.indexOf('BBB SKU ID');
+  if (pidIdx === -1 || skuIdx === -1) { alert('Could not find BBB Product ID / BBB SKU ID columns.'); return; }
+
+  masterSkuMap.clear();
+  for (let i = 3; i < rows.length; i++) {
+    const productId = String(rows[i][pidIdx] || '').trim();
+    const skuId     = String(rows[i][skuIdx]  || '').trim();
+    if (productId && skuId) masterSkuMap.set(skuId, productId);
+  }
+  alert(`Master register loaded: ${masterSkuMap.size} SKU → Product ID mappings.`);
+  input.value = '';
 }
 
 // ── Connector States ──────────────────────────────────────────────────────────
