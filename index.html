@@ -75,6 +75,18 @@
     .bl-err     { color: #c0392b; }
     .dd-ts  { display: block; font-size: 10px; color: #bbb; margin-top: 1px; font-weight: 400; }
     .btn-ts { font-size: 10px; color: #bbb; text-align: center; margin-top: 3px; line-height: 1; }
+    .sku-expand { background:none;border:none;cursor:pointer;color:#ccc;font-size:11px;padding:0 4px 0 0;line-height:1;vertical-align:middle;flex-shrink:0; }
+    .sku-expand:hover { color:#A100FF; }
+    tr.sku-subrow > td { padding:0; border-bottom:2px solid #e8e0f5; }
+    .sku-subpanel { padding:8px 12px 10px 32px; background:#fafbff; }
+    .sku-table { border-collapse:collapse; font-size:11px; font-family:monospace; }
+    .sku-table th { color:#999;font-weight:600;text-align:left;padding:2px 16px 4px 0;border-bottom:1px solid #eee;white-space:nowrap; }
+    .sku-table td { padding:2px 16px 2px 0;white-space:nowrap; }
+    .sku-table tr.sku-dup td { background:#fff0f0;color:#c0392b;font-weight:600; }
+    .sku-table tr.sku-conflict td { background:#ffd6d6;color:#922b21;font-weight:700;border-top:1px solid #e74c3c;border-bottom:1px solid #e74c3c; }
+    .sku-table tr.sku-conflict td:first-child { border-left:3px solid #e74c3c; }
+    .sku-conflict-badge { display:inline-block;margin-left:6px;font-size:9px;font-weight:700;color:#fff;background:#c0392b;border-radius:2px;padding:1px 4px;vertical-align:middle;text-transform:uppercase;letter-spacing:.3px; }
+    .sku-loading { color:#bbb;font-size:11px;font-style:italic; }
 
     .table-wrap { flex: 1; overflow: auto; border: 1px solid #e0e0e0; border-radius: 6px; background: #fff; }
     table { width: 100%; border-collapse: collapse; min-width: 1100px; }
@@ -138,7 +150,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.7</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.8</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -316,6 +328,8 @@ let exportFormat = localStorage.getItem('syndigo_export_format') || 'csv';
 let pinSelected = false;
 let orphanCsCount = 0;
 let syncSummary = '';
+const expandedSkus = new Set();
+const skuCache = {};
 let newEntityIds = new Set();
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -658,7 +672,7 @@ async function loadFromSyndigo() {
           filters: { typesCriterion: ['product'] },
           valueContexts: [{ source: 'internal', locale: 'en-US' }],
         },
-        fields: { attributes: ['thgproductname', 'thgbrandname'] },
+        fields: { attributes: ['thgproductname', 'thgbrandname', 'variantoptions'] },
         options: { maxRecords: PAGE, from },
       },
     });
@@ -693,11 +707,17 @@ async function loadFromSyndigo() {
 
     products = allEntities.map(entity => {
       const p = prev[entity.id] || {};
+      const voGroups = entity?.data?.attributes?.variantoptions?.group || [];
+      const variantOpts = voGroups.map(g => ({
+        attr:  g.variantoptionattributename?.values?.[0]?.value || '',
+        label: g.variantoptionname?.values?.[0]?.value || '',
+      })).filter(o => o.attr);
       return {
         internalId:  entity.name,
         entityUuid:  entity.id,
         productName: entity?.data?.attributes?.thgproductname?.values?.[0]?.value || '',
         brand:       entity?.data?.attributes?.thgbrandname?.values?.[0]?.value   || '',
+        variantOpts: variantOpts.length ? variantOpts : (p.variantOpts || []),
         shopifyGid:  p.shopifyGid  || '',
         lastResult:  p.lastResult  || '',
         lastUpdated: p.lastUpdated || '',
@@ -1243,16 +1263,20 @@ function renderTable() {
     return;
   }
 
-  tbody.innerHTML = filtered.map(p => {
-    const sel    = selectedIds.has(p.entityUuid);
-    const gidNum = p.shopifyGid ? p.shopifyGid.replace('gid://shopify/Product/', '#') : '—';
-    const uuidSh = p.entityUuid ? `${p.entityUuid.substring(0,8)}…` : '—';
-    return `<tr class="${sel ? 'row-selected' : ''}" onclick="rowClick(event,'${p.entityUuid}')">
+  tbody.innerHTML = filtered.flatMap(p => {
+    const sel     = selectedIds.has(p.entityUuid);
+    const expanded = expandedSkus.has(p.entityUuid);
+    const gidNum  = p.shopifyGid ? p.shopifyGid.replace('gid://shopify/Product/', '#') : '—';
+    const uuidSh  = p.entityUuid ? `${p.entityUuid.substring(0,8)}…` : '—';
+    const expandBtn = p.entityUuid
+      ? `<button class="sku-expand" onclick="event.stopPropagation();toggleSkuExpand('${esc(p.entityUuid)}','${esc(p.internalId)}')" title="Show SKUs">${expanded ? '▾' : '▸'}</button>`
+      : '';
+    const mainRow = `<tr class="${sel ? 'row-selected' : ''}" onclick="rowClick(event,'${p.entityUuid}')">
       <td style="padding-left:14px"><input type="checkbox" ${sel ? 'checked' : ''} onclick="event.stopPropagation();toggleRow('${p.entityUuid}',this.checked);renderTable();" /></td>
       <td>${syndigoBaseUrl && p.entityUuid
         ? `<a href="${syndigoBaseUrl}/entity-manage?id=${esc(p.entityUuid)}&type=product" target="_blank" style="font-weight:700;color:#A100FF;text-decoration:none">${esc(p.internalId || '—')}</a>`
         : `<strong>${esc(p.internalId || '—')}</strong>`}</td>
-      <td><span class="trunc-wide" title="${esc(p.productName)}">${esc(p.productName || '—')}</span></td>
+      <td><span style="display:inline-flex;align-items:center">${expandBtn}<span class="trunc-wide" title="${esc(p.productName)}">${esc(p.productName || '—')}</span></span></td>
       <td style="color:#888;font-size:11px">${esc(p.brand || '—')}</td>
       <td class="mono" title="${esc(p.entityUuid)}" style="cursor:text;user-select:all;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(uuidSh)}</td>
       <td class="mono">${p.shopifyGid && shopifyStore
@@ -1263,6 +1287,8 @@ function renderTable() {
       <td>${resultBadge(p.lastResult)}</td>
       <td style="max-width:200px;font-size:11px;color:#c0392b" title="${esc(p.error)}">${esc(trunc(p.error, 70))}</td>
     </tr>`;
+    if (!expanded) return [mainRow];
+    return [mainRow, skuSubrowHtml(p)];
   }).join('');
 
   const allSel = filtered.every(p => selectedIds.has(p.entityUuid));
@@ -1276,6 +1302,124 @@ function rowClick(e, uuid) {
   if (e.target.type === 'checkbox') return;
   selectedIds.has(uuid) ? selectedIds.delete(uuid) : selectedIds.add(uuid);
   renderTable(); updateStats();
+}
+
+async function toggleSkuExpand(uuid, internalId) {
+  if (expandedSkus.has(uuid)) { expandedSkus.delete(uuid); renderTable(); return; }
+  expandedSkus.add(uuid);
+  renderTable();
+  if (!skuCache[uuid]) {
+    skuCache[uuid] = { loading: true, skus: null, variantOpts: null, error: null };
+    try {
+      const product = products.find(p => p.entityUuid === uuid);
+      const variantOpts = product?.variantOpts?.length
+        ? product.variantOpts
+        : await fetchVariantOpts(uuid);
+      const attrNames = ['thgskuid', ...variantOpts.map(o => o.attr)];
+
+      const skuResp = await fetch(`${API}/skus`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
+        body: JSON.stringify({
+          _env: currentEnv,
+          params: {
+            query: {
+              filters: {
+                typesCriterion: ['sku'],
+                attributesCriterion: [{ thgproductid: { exacts: [internalId] } }],
+              },
+              valueContexts: [{ source: 'internal', locale: 'en-US' }],
+            },
+            fields: { attributes: attrNames },
+            options: { maxRecords: 200 },
+          },
+        }),
+      });
+      const skuData = await skuResp.json();
+      skuCache[uuid] = { loading: false, skus: skuData?.response?.entities || [], variantOpts, error: null };
+    } catch (e) {
+      skuCache[uuid] = { loading: false, skus: null, variantOpts: null, error: String(e) };
+    }
+    renderTable();
+  }
+}
+
+async function fetchVariantOpts(entityUuid) {
+  const resp = await fetch(`${API}/skus`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
+    body: JSON.stringify({
+      _env: currentEnv,
+      params: {
+        query: {
+          ids: [entityUuid],
+          filters: { typesCriterion: ['product'] },
+          valueContexts: [{ source: 'internal', locale: 'en-US' }],
+        },
+        fields: { attributes: ['variantoptions'] },
+        options: { maxRecords: 1 },
+      },
+    }),
+  });
+  const data = await resp.json();
+  const groups = data?.response?.entities?.[0]?.data?.attributes?.variantoptions?.group || [];
+  return groups.map(g => ({
+    attr:  g.variantoptionattributename?.values?.[0]?.value || '',
+    label: g.variantoptionname?.values?.[0]?.value || '',
+  })).filter(o => o.attr);
+}
+
+function skuSubrowHtml(p) {
+  const cache = skuCache[p.entityUuid];
+  let content;
+  if (!cache || cache.loading) {
+    content = '<span class="sku-loading">Loading SKUs…</span>';
+  } else if (cache.error) {
+    content = `<span style="color:#c0392b;font-size:11px">${esc(cache.error)}</span>`;
+  } else if (!cache.skus || !cache.skus.length) {
+    content = '<span class="sku-loading">No SKUs found for this product.</span>';
+  } else {
+    const opts = cache.variantOpts || [];
+
+    const conflictMatch = (p.error || '').match(/variant '([^']+)' already exists/i);
+    const conflictVals  = conflictMatch ? conflictMatch[1].split(' / ').map(v => v.trim()) : null;
+
+    const rows = cache.skus.map(sku => {
+      const a = sku.data?.attributes || {};
+      const vals = {};
+      for (const { attr } of opts) vals[attr] = a[attr]?.values?.[0]?.value || '';
+      const skuid = a.thgskuid?.values?.[0]?.value || sku.name;
+      const skuLink = syndigoBaseUrl && sku.id
+        ? `<a href="${syndigoBaseUrl}/entity-manage?id=${esc(sku.id)}&type=sku" target="_blank" style="color:inherit;text-decoration:none;font-weight:700">${esc(skuid)}</a>`
+        : esc(skuid);
+      return { skuLink, vals };
+    });
+
+    const combos = new Map();
+    for (const row of rows) {
+      const key = opts.map(o => row.vals[o.attr]).join('|');
+      combos.set(key, (combos.get(key) || 0) + 1);
+    }
+
+    const dupCount = [...combos.values()].filter(v => v > 1).length;
+    const note = conflictVals
+      ? `<div style="font-size:11px;color:#922b21;font-weight:600;margin-bottom:5px">⚠ Shopify error: duplicate variant <strong>${esc(conflictVals.join(' / '))}</strong> — affected rows highlighted below</div>`
+      : dupCount
+        ? `<div style="font-size:11px;color:#c0392b;font-weight:600;margin-bottom:5px">⚠ ${dupCount} duplicate variant combination${dupCount > 1 ? 's' : ''} detected</div>`
+        : '';
+
+    const thead = `<tr><th>SKU</th>${opts.map(o => `<th>${esc(o.label)}</th>`).join('')}</tr>`;
+    const tbody = rows.map(row => {
+      const key        = opts.map(o => row.vals[o.attr]).join('|');
+      const isDup      = combos.get(key) > 1;
+      const isConflict = conflictVals && opts.every((o, i) => (row.vals[o.attr] || '').toLowerCase() === (conflictVals[i] || '').toLowerCase());
+      const cls        = isConflict ? ' class="sku-conflict"' : isDup ? ' class="sku-dup"' : '';
+      const badge      = isConflict ? '<span class="sku-conflict-badge">error</span>' : '';
+      return `<tr${cls}><td>${row.skuLink}${badge}</td>${opts.map(o => `<td>${esc(row.vals[o.attr] || '—')}</td>`).join('')}</tr>`;
+    }).join('');
+    content = `${note}<table class="sku-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
+  }
+  return `<tr class="sku-subrow"><td colspan="10"><div class="sku-subpanel">${content}</div></td></tr>`;
 }
 
 function csBadge(s) {

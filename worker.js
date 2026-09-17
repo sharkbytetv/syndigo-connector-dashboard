@@ -62,6 +62,7 @@ export default {
       if (path === '/api/connectorstate/create') return await connectorStateCreate(request, env);
       if (path === '/api/connectorstates') return await connectorStates(request, env);
       if (path === '/api/entities') return await entities(request, env);
+      if (path === '/api/skus') return await getSkus(request, env);
       if (path === '/api/publish')         return await publish(request, env);
       if (path === '/api/status')          return await status(request, env);
       if (path === '/api/report')          return await report(request, env);
@@ -106,6 +107,21 @@ async function entities(request, env) {
   const body = await request.json();
   const c    = cfg(body._env, env);
   delete body._env;
+  const r = await fetch(`${c.baseUrl}/api/entityappservice/get`, {
+    method: 'POST',
+    headers: { ...staticHeaders(c), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return ok(await r.text());
+}
+
+async function getSkus(request, env) {
+  // Same upstream as /api/entities, so it carries the same gate.
+  if (request.headers.get('x-kv-secret') !== env.KV_SECRET) return err('Unauthorized', 401);
+  const body = await request.json();
+  const c    = cfg(body._env, env);
+  delete body._env;
+
   const r = await fetch(`${c.baseUrl}/api/entityappservice/get`, {
     method: 'POST',
     headers: { ...staticHeaders(c), 'Content-Type': 'application/json' },
