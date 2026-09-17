@@ -1,7 +1,7 @@
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, x-kv-secret',
 };
 
 function ok(body, contentType = 'application/json') {
@@ -71,12 +71,14 @@ export default {
 // ── KV storage ────────────────────────────────────────────────────────────────
 
 async function getProducts(request, env) {
+  if (request.headers.get('x-kv-secret') !== env.KV_SECRET) return err('Unauthorized', 401);
   const envKey = new URL(request.url).searchParams.get('env') || 'nonprod';
   const data   = await env.SYNDIGO_PRODUCTS.get(`${envKey}/products`);
   return ok(data || '[]');
 }
 
 async function saveProducts(request, env) {
+  if (request.headers.get('x-kv-secret') !== env.KV_SECRET) return err('Unauthorized', 401);
   const envKey = new URL(request.url).searchParams.get('env') || 'nonprod';
   const body   = await request.text();
   await env.SYNDIGO_PRODUCTS.put(`${envKey}/products`, body);

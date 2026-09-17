@@ -122,6 +122,11 @@
       <button onclick="saveCookie()">Save</button>
     </div>
     <div class="csrf-tag" id="csrfTag">csrftoken: not set</div>
+    <div class="auth-row" style="margin-top:8px">
+      <input type="password" id="kvSecretInput" placeholder="KV secret — required to load/save products (ask your admin)" style="max-width:360px" />
+      <button onclick="saveKvSecret()">Save</button>
+      <span class="csrf-tag" id="kvSecretTag" style="margin-top:0"></span>
+    </div>
   </div>
 
   <div class="panel">
@@ -199,6 +204,7 @@ let activeFilter = 'all';
 let running      = false;
 let currentEnv   = 'nonprod';
 let cookie       = '';
+let kvSecret     = '';
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -206,6 +212,7 @@ window.onload = async () => {
   currentEnv = localStorage.getItem('syndigo_env') || 'nonprod';
   applyEnvUI();
   restoreCookie();
+  restoreKvSecret();
   await loadFromKV();
 };
 
@@ -259,6 +266,25 @@ function extractCsrf(c) {
   return m ? m[1].trim() : '';
 }
 
+function saveKvSecret() {
+  kvSecret = document.getElementById('kvSecretInput').value.trim();
+  localStorage.setItem('syndigo_kv_secret', kvSecret);
+  updateKvSecretTag();
+  loadFromKV();
+}
+
+function restoreKvSecret() {
+  kvSecret = localStorage.getItem('syndigo_kv_secret') || '';
+  document.getElementById('kvSecretInput').value = kvSecret;
+  updateKvSecretTag();
+}
+
+function updateKvSecretTag() {
+  const el = document.getElementById('kvSecretTag');
+  el.textContent = kvSecret ? 'set' : 'not set';
+  el.className = 'csrf-tag ' + (kvSecret ? 'csrf-ok' : 'csrf-missing');
+}
+
 function authPayload() {
   return { _env: currentEnv, _cookie: cookie, _csrf: extractCsrf(cookie) };
 }
@@ -274,7 +300,8 @@ function setKvStatus(state, text) {
 async function loadFromKV() {
   try {
     setKvStatus('', 'Loading…');
-    const resp = await fetch(`${API}/products?env=${currentEnv}`);
+    const resp = await fetch(`${API}/products?env=${currentEnv}`, { headers: { 'x-kv-secret': kvSecret } });
+    if (resp.status === 401) throw new Error('unauthorized');
     if (!resp.ok) throw new Error('KV fetch failed');
     const data = await resp.json();
     if (Array.isArray(data) && data.length > 0) {
@@ -288,7 +315,7 @@ async function loadFromKV() {
     }
     setKvStatus('synced', 'Synced');
   } catch (e) {
-    setKvStatus('error', 'KV unavailable');
+    setKvStatus('error', e.message === 'unauthorized' ? 'KV secret invalid' : 'KV unavailable');
     document.getElementById('headerStatus').textContent = 'No products loaded';
     renderTable();
     updateStats();
@@ -298,14 +325,15 @@ async function loadFromKV() {
 async function saveToKV() {
   try {
     setKvStatus('saving', 'Saving…');
-    await fetch(`${API}/products?env=${currentEnv}`, {
+    const resp = await fetch(`${API}/products?env=${currentEnv}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
       body: JSON.stringify(products),
     });
+    if (!resp.ok) throw new Error(resp.status === 401 ? 'unauthorized' : 'save failed');
     setKvStatus('synced', 'Synced');
-  } catch {
-    setKvStatus('error', 'Save failed');
+  } catch (e) {
+    setKvStatus('error', e.message === 'unauthorized' ? 'KV secret invalid' : 'Save failed');
   }
 }
 
