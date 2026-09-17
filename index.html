@@ -126,7 +126,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.2.1</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.3</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -774,39 +774,47 @@ async function loadConnectorStates() {
 }
 
 async function refreshOrphanCount() {
-  let from = 1;
-  const PAGE = 2000;
-  let count = 0;
-  while (true) {
-    const body = {
-      _env: currentEnv,
-      params: {
-        query: { filters: {
-          typesCriterion: ['connectorstate'],
-          propertiesCriterion: [{ channelId: { exacts: ['app-shopify'] } }],
-          nonContextual: false,
-        }},
-        fields: { attributes: ['channelState'] },
-        options: { maxRecords: PAGE, from },
-      },
-    };
-    const resp = await fetch(`${API}/connectorstates`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await resp.json();
-    const objects = data?.dataObjectOperationResponse?.dataObjects
-                 || data?.response?.entities
-                 || data?.response?.dataObjects
-                 || [];
-    for (const obj of objects) {
-      if (!obj?.properties?.entityId) count++;
+  try {
+    let from = 1;
+    const PAGE = 2000;
+    let count = 0;
+    const seenCs = new Set();
+    while (true) {
+      const body = {
+        _env: currentEnv,
+        params: {
+          query: { filters: {
+            typesCriterion: ['connectorstate'],
+            propertiesCriterion: [{ channelId: { exacts: ['app-shopify'] } }],
+            nonContextual: false,
+          }},
+          fields: { attributes: ['channelState'] },
+          options: { maxRecords: PAGE, from },
+        },
+      };
+      const resp = await fetch(`${API}/connectorstates`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      const objects = data?.dataObjectOperationResponse?.dataObjects
+                   || data?.response?.entities
+                   || data?.response?.dataObjects
+                   || [];
+      for (const obj of objects) {
+        const csId = obj?.id;
+        if (csId && seenCs.has(csId)) continue;
+        if (csId) seenCs.add(csId);
+        if (!obj?.properties?.entityId) count++;
+      }
+      if (objects.length < PAGE) break;
+      from += PAGE;
     }
-    if (objects.length < PAGE) break;
-    from += PAGE;
+    orphanCsCount = count;
+    updateStats();
+  } catch {
+    // silent — orphan count is a debug indicator, not critical
   }
-  orphanCsCount = count;
-  updateStats();
 }
 
 // ── Publish ───────────────────────────────────────────────────────────────────
