@@ -126,7 +126,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.9</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.9.1</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -618,6 +618,7 @@ async function loadConnectorStates() {
   let from = 1;
   const PAGE = 200;
   const csMap = {};
+  const seenCs = new Set();
   orphanCsCount = 0;
 
   try {
@@ -647,6 +648,9 @@ async function loadConnectorStates() {
                    || [];
 
       for (const obj of objects) {
+        const csId = obj?.id;
+        if (csId && seenCs.has(csId)) continue;
+        if (csId) seenCs.add(csId);
         const eid = obj?.properties?.entityId;
         if (!eid) { orphanCsCount++; continue; }
         if (csMap[eid]) continue; // first-wins: DESC sort means first seen = newest
