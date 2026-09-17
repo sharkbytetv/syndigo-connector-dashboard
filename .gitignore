@@ -1,3 +1,4 @@
 .env
 *.log
 .wrangler/
+.claude/

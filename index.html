@@ -98,13 +98,35 @@
     .bottom-bar .spacer { flex: 1; }
 
     input[type=checkbox] { width: 14px; height: 14px; cursor: pointer; accent-color: #A100FF; }
+
+    .import-group { display: flex; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; }
+    .import-main { padding: 6px 12px; font-size: 12px; font-weight: 500; cursor: pointer; background: #fff; color: #1a1a1a; border: none; border-right: 1px solid #ddd; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .import-main:hover { background: #f5f5f5; }
+    .import-caret { padding: 6px 9px; cursor: pointer; background: #fff; color: #888; border: none; font-size: 13px; }
+    .import-caret:hover { background: #f5f5f5; }
+    .dd-anchor { position: relative; }
+    .dd-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 100; background: #fff; border: 1px solid #ddd; border-radius: 6px; min-width: 210px; padding: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.1); display: none; }
+    .dd-menu.open { display: block; }
+    .dd-item { padding: 7px 12px; font-size: 12px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 8px; color: #1a1a1a; white-space: nowrap; }
+    .dd-item:hover { background: #f5f5f5; }
+    .dd-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .th-pos { position: relative; cursor: pointer; }
+    .th-inner { display: flex; align-items: center; gap: 6px; }
+    .th-filter-btn { margin-left: auto; padding: 1px 6px; border-radius: 3px; border: 1px solid #ddd; background: #fff; font-size: 10px; color: #888; cursor: pointer; display: inline-flex; align-items: center; gap: 3px; font-weight: 600; text-transform: none; letter-spacing: 0; white-space: nowrap; }
+    .th-filter-btn.active { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+    .date-dd-inner { padding: 10px; min-width: 230px; }
+    .date-dd-inner label { font-size: 11px; color: #888; display: block; margin-bottom: 3px; }
+    .date-dd-inner input[type=date] { width: 100%; padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; margin-bottom: 8px; }
+    .fmt-toggle { display: flex; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; }
+    .fmt-btn { padding: 6px 10px; font-size: 11px; font-weight: 600; cursor: pointer; background: #fff; color: #888; border: none; }
+    .fmt-btn.active { background: #1a1a1a; color: #fff; }
   </style>
 </head>
 <body>
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.6</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.7</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -133,58 +155,36 @@
   <div class="panel">
     <div class="controls-row">
       <input type="file" id="fileInput" accept=".xlsx,.xlsm,.csv" style="display:none" onchange="handleFile(this)" />
-      <div id="dropzone" onclick="document.getElementById('fileInput').click()"
-        style="border:2px dashed #ddd;border-radius:4px;padding:8px 16px;font-size:12px;color:#888;cursor:pointer;transition:all 0.15s;white-space:nowrap"
-        ondragover="event.preventDefault();this.style.borderColor='#A100FF';this.style.color='#A100FF'"
-        ondragleave="this.style.borderColor='#ddd';this.style.color='#888'"
-        ondrop="event.preventDefault();this.style.borderColor='#ddd';this.style.color='#888';const f=event.dataTransfer.files[0];if(f){const i=document.getElementById('fileInput');const dt=new DataTransfer();dt.items.add(f);i.files=dt.files;handleFile(i);}">
-        Drop Syndigo export here or click to browse
+      <input type="file" id="shopifyFileInput" accept=".xlsx,.xlsm" style="display:none" onchange="handleShopifyFile(this)" />
+      <input type="file" id="masterRegInput" accept=".xlsx,.xlsm" style="display:none" onchange="handleMasterReg(this)" />
+
+      <div class="dd-anchor">
+        <div class="import-group">
+          <button class="import-main" onclick="document.getElementById('fileInput').click()">↑ Import</button>
+          <button class="import-caret" onclick="event.stopPropagation();toggleDD('importMenu')">▾</button>
+        </div>
+        <div class="dd-menu" id="importMenu">
+          <div class="dd-item" onclick="closeDD();document.getElementById('fileInput').click()">📄 Syndigo export</div>
+          <div class="dd-item" onclick="closeDD();document.getElementById('shopifyFileInput').click()">🛍 Shopify export — backfill GIDs</div>
+          <div class="dd-item" onclick="closeDD();document.getElementById('masterRegInput').click()">📋 Master register — SKU map</div>
+        </div>
       </div>
-      <input type="file" id="shopifyFileInput" accept=".xlsx,.csv" style="display:none" onchange="handleShopifyFile(this)" />
-      <div onclick="document.getElementById('shopifyFileInput').click()"
-        style="border:2px dashed #ddd;border-radius:4px;padding:8px 16px;font-size:12px;color:#888;cursor:pointer;transition:all 0.15s;white-space:nowrap"
-        ondragover="event.preventDefault();this.style.borderColor='#27ae60';this.style.color='#27ae60'"
-        ondragleave="this.style.borderColor='#ddd';this.style.color='#888'"
-        ondrop="event.preventDefault();this.style.borderColor='#ddd';this.style.color='#888';const f=event.dataTransfer.files[0];if(f){const i=document.getElementById('shopifyFileInput');const dt=new DataTransfer();dt.items.add(f);i.files=dt.files;handleShopifyFile(i);}">
-        Drop Shopify export to backfill GIDs
-      </div>
-      <input type="file" id="masterRegInput" accept=".xlsx" style="display:none" onchange="handleMasterReg(this)" />
-      <div onclick="document.getElementById('masterRegInput').click()"
-        style="border:2px dashed #ddd;border-radius:4px;padding:8px 16px;font-size:12px;color:#888;cursor:pointer;transition:all 0.15s;white-space:nowrap"
-        ondragover="event.preventDefault();this.style.borderColor='#224BFF';this.style.color='#224BFF'"
-        ondragleave="this.style.borderColor='#ddd';this.style.color='#888'"
-        ondrop="event.preventDefault();this.style.borderColor='#ddd';this.style.color='#888';const f=event.dataTransfer.files[0];if(f){const i=document.getElementById('masterRegInput');const dt=new DataTransfer();dt.items.add(f);i.files=dt.files;handleMasterReg(i);}">
-        Drop Master Register (SKU map)
-      </div>
+
       <button onclick="loadConnectorStates()" id="btnLoadCS">Refresh CS Status</button>
       <div class="sep"></div>
       <button onclick="exportData()">Export</button>
-      <div style="display:flex;border:1px solid #ddd;border-radius:4px;overflow:hidden">
-        <span id="fmtCsv" onclick="setExportFormat('csv')" style="padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer">CSV</span>
-        <span id="fmtXlsx" onclick="setExportFormat('xlsx')" style="padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer">XLSX</span>
+      <div class="fmt-toggle">
+        <button class="fmt-btn" id="fmtCsv" onclick="setExportFormat('csv')">CSV</button>
+        <button class="fmt-btn" id="fmtXlsx" onclick="setExportFormat('xlsx')">XLSX</button>
       </div>
+      <div class="sep"></div>
       <button class="btn-danger" onclick="clearData()">Clear All</button>
       <div class="sep"></div>
-      <div class="filter-group">
-        <span class="fpill active" data-filter="all"      onclick="setFilter('all',this)">All</span>
-        <span class="fpill" data-filter="none"      onclick="setFilter('none',this)">No CS</span>
-        <span class="fpill" data-filter="inprocess" onclick="setFilter('inprocess',this)">In Process</span>
-        <span class="fpill" data-filter="errors"    onclick="setFilter('errors',this)">Errors</span>
-      </div>
-      <div class="sep"></div>
-      <div style="display:flex;gap:6px;align-items:center">
-        <input type="text" id="idSearch" placeholder="Filter by product ID, Shopify ID, name, or error…"
-          style="width:280px;padding:5px 10px;border:1px solid #ddd;border-radius:4px;font-size:12px"
+      <div style="display:flex;gap:6px;align-items:center;flex:1;min-width:180px;max-width:340px">
+        <input type="text" id="idSearch" placeholder="Filter by ID, name, or error…"
+          style="flex:1;padding:5px 10px;border:1px solid #ddd;border-radius:4px;font-size:12px"
           oninput="applyIdSearch()" />
         <button onclick="document.getElementById('idSearch').value='';applyIdSearch()">✕</button>
-      </div>
-      <div class="sep"></div>
-      <div style="display:flex;gap:6px;align-items:center">
-        <span style="font-size:11px;color:#888;white-space:nowrap">Updated:</span>
-        <input type="date" id="dateFrom" style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px" onchange="renderTable();updateStats()" />
-        <span style="font-size:11px;color:#888">→</span>
-        <input type="date" id="dateTo" style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px" onchange="renderTable();updateStats()" />
-        <button onclick="document.getElementById('dateFrom').value='';document.getElementById('dateTo').value='';renderTable();updateStats()">✕</button>
       </div>
     </div>
     <div class="stats-row" style="margin-top:10px" id="statsRow">
@@ -208,8 +208,30 @@
           <th class="sortable" onclick="sortBy('brand')">Brand</th>
           <th class="sortable" onclick="sortBy('entityUuid')">Entity UUID</th>
           <th class="sortable" onclick="sortBy('shopifyGid')">Shopify GID</th>
-          <th class="sortable" onclick="sortBy('csStatus')">CS Status</th>
-          <th class="sortable" onclick="sortBy('lastUpdated')">Last Updated</th>
+          <th class="th-pos" onclick="toggleDD('csMenu')">
+            <div class="th-inner">
+              CS Status <span id="csFilterBtn" class="th-filter-btn">All</span>
+            </div>
+            <div class="dd-menu" id="csMenu" onclick="event.stopPropagation()">
+              <div class="dd-item" onclick="setFilter('all');closeDD()"><span class="dd-dot" style="background:#ccc"></span> All</div>
+              <div class="dd-item" onclick="setFilter('none');closeDD()"><span class="dd-dot" style="background:#888"></span> No CS</div>
+              <div class="dd-item" onclick="setFilter('inprocess');closeDD()"><span class="dd-dot" style="background:#e67e22"></span> In Process</div>
+              <div class="dd-item" onclick="setFilter('errors');closeDD()"><span class="dd-dot" style="background:#e74c3c"></span> Errors</div>
+              <div class="dd-item" onclick="setFilter('completed');closeDD()"><span class="dd-dot" style="background:#27ae60"></span> Completed</div>
+            </div>
+          </th>
+          <th class="th-pos sortable" onclick="handleDateThClick(event)">
+            <div class="th-inner">
+              Last Updated <span id="dateFilterBtn" class="th-filter-btn">Any date</span>
+            </div>
+            <div class="dd-menu date-dd-inner" id="dateMenu" onclick="event.stopPropagation()">
+              <label>From</label>
+              <input type="date" id="dateFrom" onchange="applyDateFilter()" />
+              <label>To</label>
+              <input type="date" id="dateTo" onchange="applyDateFilter()" />
+              <button style="width:100%;margin-top:4px;padding:5px;border:1px solid #ddd;border-radius:4px;font-size:11px;cursor:pointer;background:#fff" onclick="clearDateFilter()">Clear</button>
+            </div>
+          </th>
           <th class="sortable" onclick="sortBy('lastResult')">Last Result</th>
           <th>Error</th>
         </tr>
@@ -260,6 +282,9 @@ window.onload = async () => {
   restoreCookie();
   restoreKvSecret();
   applyExportFormatUI();
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.dd-anchor') && !e.target.closest('.th-pos')) closeDD();
+  });
   await loadConfig();
   await loadFromKV();
 };
@@ -836,13 +861,14 @@ function sorted(list) {
   });
 }
 
-function setFilter(f, el) {
+function setFilter(f) {
   activeFilter = f;
-  document.querySelectorAll('.fpill').forEach(p => {
-    p.className = 'fpill' + (p.dataset.filter === f
-      ? ` active${f === 'errors' ? '-error' : f === 'inprocess' ? '-warn' : f === 'none' ? '-none' : ''}`
-      : '');
-  });
+  const labels = { all: 'All', none: 'No CS', inprocess: 'In Process', errors: 'Errors', completed: 'Completed' };
+  const btn = document.getElementById('csFilterBtn');
+  if (btn) {
+    btn.textContent = labels[f] || 'All';
+    btn.className = 'th-filter-btn' + (f !== 'all' ? ' active' : '');
+  }
   renderTable();
   updateStats();
 }
@@ -852,7 +878,8 @@ function getFiltered() {
   switch (activeFilter) {
     case 'none':      list = products.filter(p => p.csStatus === 'none'); break;
     case 'inprocess': list = products.filter(p => p.csStatus === 'inprocess'); break;
-    case 'errors':    list = products.filter(p => p.lastResult === 'Errored' || p.csStatus === 'inprocess'); break;
+    case 'errors':     list = products.filter(p => p.lastResult === 'Errored' || p.csStatus === 'inprocess'); break;
+    case 'completed':  list = products.filter(p => p.csStatus === 'completed'); break;
     default:          list = products;
   }
   if (idFilter.size) list = list.filter(p =>
@@ -862,8 +889,8 @@ function getFiltered() {
     [...idFilter].some(term => p.productName?.toLowerCase().includes(term.toLowerCase())) ||
     [...idFilter].some(term => p.error?.toLowerCase().includes(term.toLowerCase()))
   );
-  const dateFrom = document.getElementById('dateFrom')?.value;
-  const dateTo   = document.getElementById('dateTo')?.value;
+  const dateFrom = document.getElementById('dateFrom')?.value || '';
+  const dateTo   = document.getElementById('dateTo')?.value   || '';
   if (dateFrom || dateTo) {
     list = list.filter(p => {
       if (!p.lastUpdated) return false;
@@ -1001,10 +1028,8 @@ function setExportFormat(fmt) {
 }
 
 function applyExportFormatUI() {
-  const active = 'background:#1a1a1a;color:#fff';
-  const inactive = 'background:#fff;color:#666';
-  document.getElementById('fmtCsv').style.cssText  = `padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;${exportFormat === 'csv'  ? active : inactive}`;
-  document.getElementById('fmtXlsx').style.cssText = `padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;${exportFormat === 'xlsx' ? active : inactive}`;
+  document.getElementById('fmtCsv').className  = 'fmt-btn' + (exportFormat === 'csv'  ? ' active' : '');
+  document.getElementById('fmtXlsx').className = 'fmt-btn' + (exportFormat === 'xlsx' ? ' active' : '');
 }
 
 function exportData() {
@@ -1030,6 +1055,44 @@ function exportXLSX() {
   const wb      = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Connector Status');
   XLSX.writeFile(wb, `connector-status-${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+// ── Dropdowns & column filters ────────────────────────────────────────────────
+
+function toggleDD(id) {
+  const isOpen = document.getElementById(id).classList.contains('open');
+  closeDD();
+  if (!isOpen) document.getElementById(id).classList.add('open');
+}
+
+function closeDD() {
+  document.querySelectorAll('.dd-menu').forEach(d => d.classList.remove('open'));
+}
+
+function handleDateThClick(e) {
+  if (!e.target.closest('.dd-menu') && !e.target.closest('.th-filter-btn')) {
+    const dd = document.getElementById('dateMenu');
+    if (!dd.classList.contains('open')) { toggleDD('dateMenu'); return; }
+  }
+  if (!e.target.closest('.dd-menu')) sortBy('lastUpdated');
+}
+
+function applyDateFilter() {
+  const from = document.getElementById('dateFrom').value;
+  const to   = document.getElementById('dateTo').value;
+  const btn  = document.getElementById('dateFilterBtn');
+  if (btn) {
+    btn.textContent = (from || to) ? 'Filtered' : 'Any date';
+    btn.className   = 'th-filter-btn' + ((from || to) ? ' active' : '');
+  }
+  renderTable(); updateStats();
+}
+
+function clearDateFilter() {
+  document.getElementById('dateFrom').value = '';
+  document.getElementById('dateTo').value   = '';
+  applyDateFilter();
+  closeDD();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
