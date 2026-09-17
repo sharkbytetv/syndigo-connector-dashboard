@@ -126,7 +126,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.2</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.2.1</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -705,7 +705,7 @@ async function loadConnectorStates() {
   btn.textContent = 'Loading…';
 
   try {
-    const CHUNK = 2000;
+    const CHUNK = 1500;
     const entityIds = products.map(p => p.entityUuid).filter(Boolean);
     const csMap = {};
 
