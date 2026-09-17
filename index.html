@@ -104,7 +104,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5.5</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.6</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -158,7 +158,11 @@
       </div>
       <button onclick="loadConnectorStates()" id="btnLoadCS">Refresh CS Status</button>
       <div class="sep"></div>
-      <button onclick="exportCSV()">Export CSV</button>
+      <button onclick="exportData()">Export</button>
+      <div style="display:flex;border:1px solid #ddd;border-radius:4px;overflow:hidden">
+        <span id="fmtCsv" onclick="setExportFormat('csv')" style="padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer">CSV</span>
+        <span id="fmtXlsx" onclick="setExportFormat('xlsx')" style="padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer">XLSX</span>
+      </div>
       <button class="btn-danger" onclick="clearData()">Clear All</button>
       <div class="sep"></div>
       <div class="filter-group">
@@ -246,6 +250,7 @@ let syndigoBaseUrl = '';
 let shopifyStore   = '';
 let idFilter = new Set();
 let masterSkuMap = new Map();
+let exportFormat = localStorage.getItem('syndigo_export_format') || 'csv';
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -254,6 +259,7 @@ window.onload = async () => {
   applyEnvUI();
   restoreCookie();
   restoreKvSecret();
+  applyExportFormatUI();
   await loadConfig();
   await loadFromKV();
 };
@@ -988,8 +994,25 @@ function setProgress(done, total, label) {
 
 // ── Export ────────────────────────────────────────────────────────────────────
 
-function exportCSV() {
+function setExportFormat(fmt) {
+  exportFormat = fmt;
+  localStorage.setItem('syndigo_export_format', fmt);
+  applyExportFormatUI();
+}
+
+function applyExportFormatUI() {
+  const active = 'background:#1a1a1a;color:#fff';
+  const inactive = 'background:#fff;color:#666';
+  document.getElementById('fmtCsv').style.cssText  = `padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;${exportFormat === 'csv'  ? active : inactive}`;
+  document.getElementById('fmtXlsx').style.cssText = `padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;${exportFormat === 'xlsx' ? active : inactive}`;
+}
+
+function exportData() {
   if (!products.length) return;
+  exportFormat === 'xlsx' ? exportXLSX() : exportCSV();
+}
+
+function exportCSV() {
   const headers = ['Internal Product ID','Product Name','Brand','Syndigo Entity UUID','Shopify Product ID','CS Status','Last Updated','Last Result','Error'];
   const rows    = products.map(p => [p.internalId, p.productName, p.brand, p.entityUuid, p.shopifyGid, p.csStatus, p.lastUpdated, p.lastResult, p.error]);
   const csv     = [headers, ...rows].map(r => r.map(c => `"${String(c||'').replace(/"/g,'""')}"`).join(',')).join('\n');
@@ -998,6 +1021,15 @@ function exportCSV() {
     download: `connector-status-${new Date().toISOString().slice(0,10)}.csv`,
   });
   a.click(); URL.revokeObjectURL(a.href);
+}
+
+function exportXLSX() {
+  const headers = ['Internal Product ID','Product Name','Brand','Syndigo Entity UUID','Shopify Product ID','CS Status','Last Updated','Last Result','Error'];
+  const rows    = products.map(p => [p.internalId, p.productName, p.brand, p.entityUuid, p.shopifyGid, p.csStatus, formatDate(p.lastUpdated), p.lastResult, p.error]);
+  const ws      = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const wb      = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Connector Status');
+  XLSX.writeFile(wb, `connector-status-${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
