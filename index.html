@@ -104,7 +104,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5.4</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5.5</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -373,6 +373,10 @@ async function loadFromKV() {
     const data = await resp.json();
     if (Array.isArray(data) && data.length > 0) {
       products = data;
+      for (const p of products) {
+        if (p.lastUpdated) { const d = new Date(p.lastUpdated); if (!isNaN(d)) p.lastUpdated = d.toISOString(); }
+      }
+      saveToKV();
       selectedIds.clear();
       renderTable();
       updateStats();
