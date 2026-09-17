@@ -104,7 +104,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5.3</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.5.4</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -695,7 +695,7 @@ async function publishSelected() {
 
       const csvText = await fetchReport(taskId);
       if (csvText) applyReport(csvText, completedTime);
-      else if (completedTime) { const ts = new Date(completedTime).toLocaleString(); for (const p of batch) p.lastUpdated = ts; }
+      else if (completedTime) { const ts = new Date(completedTime).toISOString(); for (const p of batch) p.lastUpdated = ts; }
 
       setProgress(i + 1, batches.length, `Batch ${i+1} of ${batches.length} — done`);
       renderTable();
