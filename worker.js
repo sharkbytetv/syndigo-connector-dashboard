@@ -59,6 +59,7 @@ export default {
       if (path === '/api/products' && request.method === 'POST') return await saveProducts(request, env);
       if (path === '/api/config') return await getConfig(request, env);
       if (path === '/api/delete-cs') return await deleteCs(request, env);
+      if (path === '/api/connectorstate/create') return await connectorStateCreate(request, env);
       if (path === '/api/connectorstates') return await connectorStates(request, env);
       if (path === '/api/publish')         return await publish(request, env);
       if (path === '/api/status')          return await status(request, env);
@@ -130,6 +131,41 @@ async function publish(request, env) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+  });
+  return ok(await r.text());
+}
+
+async function connectorStateCreate(request, env) {
+  // Backfills a completed connectorstate for a product that already exists in Shopify.
+  // Mutates tenant data with the Worker's own credentials, so gate it on the team secret.
+  if (request.headers.get('x-kv-secret') !== env.KV_SECRET) return err('Unauthorized', 401);
+  const body = await request.json();
+  const c    = cfg(body._env, env);
+  const { entityId, shopifyGid, csId } = body;
+  const val  = v => ({ values: [{ value: v, locale: 'en-US', source: 'internal' }] });
+
+  const r = await fetch(`${c.baseUrl}/api/connectorService/create`, {
+    method: 'POST',
+    headers: { ...staticHeaders(c), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataObject: {
+      id:   csId,
+      type: 'connectorstate',
+      properties: {
+        tenantId:       c.tenant,
+        channelId:      'app-shopify',
+        outboundTaskId: '',
+        entityId,
+        entityType:     'product',
+        productId:      shopifyGid,
+        __lineNumber:   'null',
+      },
+      data: { attributes: {
+        channelState: val('completed'),
+        productId:    val(shopifyGid),
+        bulkOpId:     val('null'),
+        __lineNumber: val('null'),
+      }},
+    }}),
   });
   return ok(await r.text());
 }

@@ -126,7 +126,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.9.1</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.10</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -691,74 +691,136 @@ async function loadConnectorStates() {
 
 async function publishSelected() {
   if (running) return;
-  if (!cookie) { alert('Paste and save your session cookie first.'); return; }
 
   const toPublish = getFiltered().filter(p => selectedIds.has(p.entityUuid));
   if (!toPublish.length) return;
+
+  // Products with a GID but no CS get a direct CS backfill (already in Shopify, just missing the link).
+  // Everything else (no GID, or already has a CS) goes through the full batch-create-job flow.
+  const backfill = toPublish.filter(p => p.shopifyGid && (!p.csStatus || p.csStatus === 'none'));
+  const fresh    = toPublish.filter(p => !p.shopifyGid || (p.csStatus && p.csStatus !== 'none'));
+
+  if (fresh.length && !cookie) { alert('Paste and save your session cookie first (required for products without a Shopify GID).'); return; }
 
   running = true;
   document.getElementById('btnPublish').disabled = true;
   document.getElementById('progressPanel').style.display = 'block';
 
-  const batches = [];
-  for (let i = 0; i < toPublish.length; i += 10) batches.push(toPublish.slice(i, i + 10));
+  const BATCH_SIZE  = 10;
+  const CONCURRENCY = 3;
+  const freshBatches = [];
+  for (let i = 0; i < fresh.length; i += BATCH_SIZE) freshBatches.push(fresh.slice(i, i + BATCH_SIZE));
+
+  const totalUnits = backfill.length + freshBatches.length;
+  let doneUnits = 0;
 
   try {
-    for (let i = 0; i < batches.length; i++) {
-      const batch     = batches[i];
-      const entityIds = batch.map(p => p.entityUuid);
-      const taskId    = crypto.randomUUID();
-      setProgress(i, batches.length, `Batch ${i+1} of ${batches.length} — publishing ${batch.length} products`);
-
-      const fireResp = await fetch(`${API}/publish`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...authPayload(),
-          proxyObject: {
-            type: 'batch-create-job',
-            data: { jsonData: {
-              requestBody: {
-                jobIdentifier: { appId: 'app-shopify', jobDefId: 'shopify-rest-trigger' },
-                batchOptions:  { poolId: 'rsbatch' },
-                jobInputPayload: { searchObject: { params: {
-                  query: {
-                    ids: entityIds,
-                    filters: { typesCriterion: entityIds.map(() => 'product') },
-                    valueContexts: [{ source: 'internal', locale: 'en-US' }],
-                  },
-                  fields: { attributes: ['_ALL'], relationships: ['_ALL'] },
-                }}},
-              },
-              requestHeaders: { 'x-rdp-taskId': taskId },
-            }},
-          },
-        }),
-      });
-
-      const fireResult = await fireResp.json().catch(() => ({}));
-      const fireStatus = fireResult?.response?.status || fireResult?.dataObjectOperationResponse?.status;
-
-      if (fireResp.status !== 200 || fireStatus !== 'success') {
-        const errMsg = `HTTP ${fireResp.status}: ${fireStatus || JSON.stringify(fireResult).substring(0, 80)}`;
-        for (const p of batch) { p.lastResult = 'API Error'; p.error = errMsg; p.lastUpdated = new Date().toISOString(); }
-        renderTable();
-        continue;
+    // ── Phase 1: CS backfill (products that already have a Shopify GID) ──────
+    if (backfill.length) {
+      setProgress(doneUnits, totalUnits, `Creating CS for ${backfill.length} product${backfill.length > 1 ? 's' : ''} with existing GID…`);
+      const CS_CONCURRENCY = 10;
+      for (let i = 0; i < backfill.length; i += CS_CONCURRENCY) {
+        const chunk = backfill.slice(i, i + CS_CONCURRENCY);
+        await Promise.all(chunk.map(async (p) => {
+          const csId = crypto.randomUUID();
+          try {
+            const resp = await fetch(`${API}/connectorstate/create`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
+              body: JSON.stringify({ _env: currentEnv, entityId: p.entityUuid, shopifyGid: p.shopifyGid, csId }),
+            });
+            const result = await resp.json().catch(() => ({}));
+            const ok = result?.response?.status === 'success'
+                    || result?.dataObjectOperationResponse?.status === 'success';
+            if (ok) {
+              p.csStatus    = 'completed';
+              p.csUuid      = csId;
+              p.lastResult  = 'CS Created';
+              p.lastUpdated = new Date().toISOString();
+              p.error = '';
+            } else {
+              p.lastResult  = 'CS Error';
+              p.error       = JSON.stringify(result).substring(0, 120);
+              p.lastUpdated = new Date().toISOString();
+            }
+          } catch (e) {
+            p.lastResult = 'CS Error'; p.error = String(e); p.lastUpdated = new Date().toISOString();
+          }
+          doneUnits++;
+          setProgress(doneUnits, totalUnits, `CS backfill: ${doneUnits} of ${backfill.length}…`);
+        }));
       }
+      renderTable(); updateStats(); saveToKV();
+    }
 
-      const { completedTime } = await pollTask(taskId, s =>
-        setProgress(i, batches.length, `Batch ${i+1} of ${batches.length} — waiting… (${s}s)`)
-      );
+    // ── Phase 2: Full publish (products without a Shopify GID) ───────────────
+    let doneBatches = 0;
+    for (let g = 0; g < freshBatches.length; g += CONCURRENCY) {
+      const group    = freshBatches.slice(g, g + CONCURRENCY);
+      const groupEnd = Math.min(g + CONCURRENCY, freshBatches.length);
+      setProgress(doneUnits, totalUnits, `Batches ${g+1}–${groupEnd} of ${freshBatches.length} — firing…`);
 
-      const csvText = await fetchReport(taskId);
-      if (csvText) applyReport(csvText, completedTime);
-      else if (completedTime) { const ts = new Date(completedTime).toISOString(); for (const p of batch) p.lastUpdated = ts; }
+      const fired = await Promise.all(group.map(async (batch) => {
+        const entityIds = batch.map(p => p.entityUuid);
+        const taskId    = crypto.randomUUID();
+        try {
+          const fireResp = await fetch(`${API}/publish`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...authPayload(),
+              proxyObject: {
+                type: 'batch-create-job',
+                data: { jsonData: {
+                  requestBody: {
+                    jobIdentifier: { appId: 'app-shopify', jobDefId: 'shopify-rest-trigger' },
+                    batchOptions:  { poolId: 'rsbatch' },
+                    jobInputPayload: { searchObject: { params: {
+                      query: {
+                        ids: entityIds,
+                        filters: { typesCriterion: entityIds.map(() => 'product') },
+                        valueContexts: [{ source: 'internal', locale: 'en-US' }],
+                      },
+                      fields: { attributes: ['_ALL'], relationships: ['_ALL'] },
+                    }}},
+                  },
+                  requestHeaders: { 'x-rdp-taskId': taskId },
+                }},
+              },
+            }),
+          });
+          const fireResult = await fireResp.json().catch(() => ({}));
+          const fireStatus = fireResult?.response?.status || fireResult?.dataObjectOperationResponse?.status;
+          if (fireResp.status !== 200 || fireStatus !== 'success') {
+            const errMsg = `HTTP ${fireResp.status}: ${fireStatus || JSON.stringify(fireResult).substring(0, 80)}`;
+            for (const p of batch) { p.lastResult = 'API Error'; p.error = errMsg; p.lastUpdated = new Date().toISOString(); }
+            return { batch, taskId: null };
+          }
+          return { batch, taskId };
+        } catch (e) {
+          for (const p of batch) { p.lastResult = 'API Error'; p.error = String(e); p.lastUpdated = new Date().toISOString(); }
+          return { batch, taskId: null };
+        }
+      }));
 
-      setProgress(i + 1, batches.length, `Batch ${i+1} of ${batches.length} — done`);
-      renderTable();
-      updateStats();
-      saveToKV();
+      setProgress(doneUnits, totalUnits, `Batches ${g+1}–${groupEnd} of ${freshBatches.length} — waiting…`);
+      const polled = await Promise.all(fired.map(async ({ batch, taskId }) => {
+        if (!taskId) return { batch, taskId: null, completedTime: null };
+        const { completedTime } = await pollTask(taskId);
+        return { batch, taskId, completedTime };
+      }));
 
-      if (i < batches.length - 1) await sleep(2000);
+      await Promise.all(polled.map(async ({ batch, taskId, completedTime }) => {
+        if (!taskId) return;
+        const csvText = await fetchReport(taskId);
+        if (csvText) applyReport(csvText, completedTime);
+        else if (completedTime) { const ts = new Date(completedTime).toISOString(); for (const p of batch) p.lastUpdated = ts; }
+      }));
+
+      doneBatches += group.length;
+      doneUnits   += group.length;
+      setProgress(doneUnits, totalUnits, `${doneBatches} of ${freshBatches.length} batches done`);
+      renderTable(); updateStats(); saveToKV();
+
+      if (g + CONCURRENCY < freshBatches.length) await sleep(1000);
     }
   } finally {
     running = false;
