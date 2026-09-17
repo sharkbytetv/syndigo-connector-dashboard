@@ -102,6 +102,7 @@ async function getConfig(request, env) {
 // ── Syndigo proxy ─────────────────────────────────────────────────────────────
 
 async function entities(request, env) {
+  if (request.headers.get('x-kv-secret') !== env.KV_SECRET) return err('Unauthorized', 401);
   const body = await request.json();
   const c    = cfg(body._env, env);
   delete body._env;
