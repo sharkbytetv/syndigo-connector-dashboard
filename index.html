@@ -73,6 +73,8 @@
     .bl-pending { color: #bbb; }
     .bl-ok      { color: #27ae60; }
     .bl-err     { color: #c0392b; }
+    .dd-ts  { display: block; font-size: 10px; color: #bbb; margin-top: 1px; font-weight: 400; }
+    .btn-ts { font-size: 10px; color: #bbb; text-align: center; margin-top: 3px; line-height: 1; }
 
     .table-wrap { flex: 1; overflow: auto; border: 1px solid #e0e0e0; border-radius: 6px; background: #fff; }
     table { width: 100%; border-collapse: collapse; min-width: 1100px; }
@@ -136,7 +138,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.4</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.5</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -174,14 +176,17 @@
           <button class="import-caret" onclick="event.stopPropagation();toggleDD('importMenu')">▾</button>
         </div>
         <div class="dd-menu" id="importMenu">
-          <div class="dd-item" onclick="closeDD();loadFromSyndigo()">⟳ Sync products from Syndigo</div>
-          <div class="dd-item" onclick="closeDD();document.getElementById('fileInput').click()">📄 Syndigo export (file)</div>
-          <div class="dd-item" onclick="closeDD();document.getElementById('shopifyFileInput').click()">🛍 Shopify export — backfill GIDs</div>
-          <div class="dd-item" onclick="closeDD();document.getElementById('masterRegInput').click()">📋 Master register — SKU map</div>
+          <div class="dd-item" onclick="closeDD();loadFromSyndigo()">⟳ Sync products from Syndigo<span class="dd-ts" id="ts-syndigo"></span></div>
+          <div class="dd-item" onclick="closeDD();document.getElementById('fileInput').click()">📄 Syndigo export (file)<span class="dd-ts" id="ts-syndigoFile"></span></div>
+          <div class="dd-item" onclick="closeDD();document.getElementById('shopifyFileInput').click()">🛍 Shopify export — backfill GIDs<span class="dd-ts" id="ts-shopify"></span></div>
+          <div class="dd-item" onclick="closeDD();document.getElementById('masterRegInput').click()">📋 Master register — SKU map<span class="dd-ts" id="ts-master"></span></div>
         </div>
       </div>
 
-      <button onclick="loadConnectorStates()" id="btnLoadCS">Refresh CS Status</button>
+      <div style="display:inline-flex;flex-direction:column;align-items:center">
+        <button onclick="loadConnectorStates()" id="btnLoadCS">Refresh CS Status</button>
+        <div class="btn-ts" id="ts-cs"></div>
+      </div>
       <div class="sep"></div>
       <button onclick="exportData()">Export</button>
       <div class="fmt-toggle">
@@ -441,12 +446,15 @@ async function loadFromKV() {
     if (resp.status === 401) throw new Error('unauthorized');
     if (!resp.ok) throw new Error('KV fetch failed');
     const data = await resp.json();
-    if (Array.isArray(data) && data.length > 0) {
-      products = data;
+    const loaded = Array.isArray(data) ? data : (data?.products ?? []);
+    if (data?.importTs) importTs = data.importTs;
+    refreshImportTimestamps();
+    if (loaded.length > 0) {
+      products = loaded;
       for (const p of products) {
         if (p.lastUpdated) { const d = new Date(p.lastUpdated); if (!isNaN(d)) p.lastUpdated = d.toISOString(); }
       }
-      saveToKV();
+      if (Array.isArray(data)) saveToKV(); // migrate old bare-array format to new envelope
       selectedIds.clear();
       renderTable();
       updateStats();
@@ -469,7 +477,7 @@ async function saveToKV() {
     const resp = await fetch(`${API}/products?env=${currentEnv}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
-      body: JSON.stringify(products),
+      body: JSON.stringify({ products, importTs }),
     });
     if (!resp.ok) throw new Error(resp.status === 401 ? 'unauthorized' : 'save failed');
     setKvStatus('synced', 'Synced');
@@ -536,6 +544,7 @@ async function handleFile(input) {
     mergeImport(incoming);
   }
 
+  setIts('syndigoFile'); refreshImportTimestamps(); saveToKV();
   input.value = '';
 }
 
@@ -604,6 +613,7 @@ async function handleShopifyFile(input) {
 
   if (!updated) { input.value = ''; alert('No matches found. If custom.product_id metafield is missing, drop the Master Register first to enable SKU fallback.'); return; }
   alert(`Backfilled ${updated} products with Shopify GIDs.`);
+  setIts('shopify'); refreshImportTimestamps();
   renderTable(); updateStats(); saveToKV();
   input.value = '';
 }
@@ -629,6 +639,7 @@ async function handleMasterReg(input) {
     if (productId && skuId) masterSkuMap.set(skuId, productId);
   }
   alert(`Master register loaded: ${masterSkuMap.size} SKU → Product ID mappings.`);
+  setIts('master'); refreshImportTimestamps(); saveToKV();
   input.value = '';
 }
 
@@ -712,6 +723,7 @@ async function loadFromSyndigo() {
     await loadConnectorStates();
 
   } finally {
+    setIts('syndigo'); refreshImportTimestamps(); saveToKV();
     if (importBtn) { importBtn.disabled = false; importBtn.textContent = '↑ Import'; }
   }
 }
@@ -788,6 +800,7 @@ async function loadConnectorStates() {
     saveToKV();
     refreshOrphanCount(); // background — doesn't block
   } finally {
+    setIts('cs'); refreshImportTimestamps(); saveToKV();
     btn.disabled = false;
     btn.textContent = 'Refresh CS Status';
   }
@@ -1388,12 +1401,38 @@ function exportXLSX() {
   XLSX.writeFile(wb, `connector-status-${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
+// ── Import timestamps ─────────────────────────────────────────────────────────
+
+let importTs = {};  // shared via KV — all users see the same values
+
+function setIts(key) { importTs[key] = Date.now(); }
+function fmtIts(key) {
+  const ms = importTs[key];
+  if (!ms) return '';
+  const diff = Date.now() - ms;
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} min ago`;
+  const d = new Date(ms);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return sameDay ? time : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
+}
+
+function refreshImportTimestamps() {
+  const map = { syndigo: 'ts-syndigo', syndigoFile: 'ts-syndigoFile', shopify: 'ts-shopify', master: 'ts-master', cs: 'ts-cs' };
+  for (const [key, id] of Object.entries(map)) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = fmtIts(key);
+  }
+}
+
 // ── Dropdowns & column filters ────────────────────────────────────────────────
 
 function toggleDD(id) {
   const isOpen = document.getElementById(id).classList.contains('open');
   closeDD();
-  if (!isOpen) document.getElementById(id).classList.add('open');
+  if (!isOpen) { document.getElementById(id).classList.add('open'); refreshImportTimestamps(); }
 }
 
 function closeDD() {
