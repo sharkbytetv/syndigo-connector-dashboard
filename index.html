@@ -219,6 +219,11 @@ window.onload = async () => {
 // ── Environment ───────────────────────────────────────────────────────────────
 
 function setEnv(env) {
+  if (env === 'prod' && currentEnv !== 'prod') {
+    if (!confirm('You are switching to PRODUCTION.
+
+Publish actions here will affect live Shopify data. Continue?')) return;
+  }
   currentEnv = env;
   localStorage.setItem('syndigo_env', env);
   applyEnvUI();
