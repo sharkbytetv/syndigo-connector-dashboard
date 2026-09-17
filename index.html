@@ -104,7 +104,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.2</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.3</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -150,6 +150,21 @@
         <span class="fpill" data-filter="none"      onclick="setFilter('none',this)">No CS</span>
         <span class="fpill" data-filter="inprocess" onclick="setFilter('inprocess',this)">In Process</span>
         <span class="fpill" data-filter="errors"    onclick="setFilter('errors',this)">Errors</span>
+      </div>
+      <div class="sep"></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="text" id="idSearch" placeholder="Filter by product ID, Shopify ID, or name…"
+          style="width:280px;padding:5px 10px;border:1px solid #ddd;border-radius:4px;font-size:12px"
+          oninput="applyIdSearch()" />
+        <button onclick="document.getElementById('idSearch').value='';applyIdSearch()">✕</button>
+      </div>
+      <div class="sep"></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <span style="font-size:11px;color:#888;white-space:nowrap">Updated:</span>
+        <input type="date" id="dateFrom" style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px" onchange="renderTable();updateStats()" />
+        <span style="font-size:11px;color:#888">→</span>
+        <input type="date" id="dateTo" style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px" onchange="renderTable();updateStats()" />
+        <button onclick="document.getElementById('dateFrom').value='';document.getElementById('dateTo').value='';renderTable();updateStats()">✕</button>
       </div>
     </div>
     <div class="stats-row" style="margin-top:10px" id="statsRow">
@@ -210,6 +225,9 @@ let running      = false;
 let currentEnv   = 'nonprod';
 let cookie       = '';
 let kvSecret     = '';
+let syndigoBaseUrl = '';
+let shopifyStore   = '';
+let idFilter = new Set();
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -218,6 +236,7 @@ window.onload = async () => {
   applyEnvUI();
   restoreCookie();
   restoreKvSecret();
+  await loadConfig();
   await loadFromKV();
 };
 
@@ -235,7 +254,7 @@ function setEnv(env) {
   selectedIds.clear();
   renderTable();
   updateStats();
-  loadFromKV();
+  loadConfig().then(() => loadFromKV());
 }
 
 function applyEnvUI() {
@@ -278,7 +297,7 @@ function saveKvSecret() {
   kvSecret = document.getElementById('kvSecretInput').value.trim();
   localStorage.setItem('syndigo_kv_secret', kvSecret);
   updateKvSecretTag();
-  loadFromKV();
+  loadConfig().then(() => loadFromKV());
 }
 
 function restoreKvSecret() {
@@ -295,6 +314,28 @@ function updateKvSecretTag() {
 
 function authPayload() {
   return { _env: currentEnv, _cookie: cookie, _csrf: extractCsrf(cookie) };
+}
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+async function loadConfig() {
+  try {
+    const resp = await fetch(`${API}/config?env=${currentEnv}`, { headers: { 'x-kv-secret': kvSecret } });
+    if (!resp.ok) throw new Error('config unavailable');
+    const data = await resp.json();
+    syndigoBaseUrl = data.baseUrl || '';
+    shopifyStore   = data.shopifyStore || '';
+  } catch { syndigoBaseUrl = ''; shopifyStore = ''; }
+}
+
+function applyIdSearch() {
+  const raw = document.getElementById('idSearch').value;
+  const ids = raw.split(/[\n,\s"]+/)
+    .map(s => s.replace(/^or$/i, '').trim())
+    .filter(Boolean);
+  idFilter = ids.length ? new Set(ids) : new Set();
+  renderTable();
+  updateStats();
 }
 
 // ── KV storage ────────────────────────────────────────────────────────────────
@@ -684,12 +725,31 @@ function setFilter(f, el) {
 }
 
 function getFiltered() {
+  let list;
   switch (activeFilter) {
-    case 'none':      return products.filter(p => p.csStatus === 'none');
-    case 'inprocess': return products.filter(p => p.csStatus === 'inprocess');
-    case 'errors':    return products.filter(p => p.lastResult === 'Errored' || p.csStatus === 'inprocess');
-    default:          return products;
+    case 'none':      list = products.filter(p => p.csStatus === 'none'); break;
+    case 'inprocess': list = products.filter(p => p.csStatus === 'inprocess'); break;
+    case 'errors':    list = products.filter(p => p.lastResult === 'Errored' || p.csStatus === 'inprocess'); break;
+    default:          list = products;
   }
+  if (idFilter.size) list = list.filter(p =>
+    idFilter.has(p.internalId) ||
+    idFilter.has(p.shopifyGid) ||
+    idFilter.has(p.shopifyGid?.replace('gid://shopify/Product/', '')) ||
+    [...idFilter].some(term => p.productName?.toLowerCase().includes(term.toLowerCase()))
+  );
+  const dateFrom = document.getElementById('dateFrom')?.value;
+  const dateTo   = document.getElementById('dateTo')?.value;
+  if (dateFrom || dateTo) {
+    list = list.filter(p => {
+      if (!p.lastUpdated) return false;
+      const d = new Date(p.lastUpdated);
+      if (dateFrom && d < new Date(dateFrom))              return false;
+      if (dateTo   && d > new Date(dateTo + 'T23:59:59')) return false;
+      return true;
+    });
+  }
+  return list;
 }
 
 // ── Selection ─────────────────────────────────────────────────────────────────
@@ -731,11 +791,15 @@ function renderTable() {
     const uuidSh = p.entityUuid ? `${p.entityUuid.substring(0,8)}…` : '—';
     return `<tr class="${sel ? 'row-selected' : ''}" onclick="rowClick(event,'${p.entityUuid}')">
       <td style="padding-left:14px"><input type="checkbox" ${sel ? 'checked' : ''} onclick="event.stopPropagation();toggleRow('${p.entityUuid}',this.checked);renderTable();" /></td>
-      <td><strong>${esc(p.internalId || '—')}</strong></td>
+      <td>${syndigoBaseUrl && p.entityUuid
+        ? `<a href="${syndigoBaseUrl}/entity-manage?id=${esc(p.entityUuid)}&type=product" target="_blank" style="font-weight:700;color:#A100FF;text-decoration:none">${esc(p.internalId || '—')}</a>`
+        : `<strong>${esc(p.internalId || '—')}</strong>`}</td>
       <td><span class="trunc-wide" title="${esc(p.productName)}">${esc(p.productName || '—')}</span></td>
       <td style="color:#888;font-size:11px">${esc(p.brand || '—')}</td>
-      <td class="mono"><span class="trunc" title="${esc(p.entityUuid)}">${esc(uuidSh)}</span></td>
-      <td class="mono"><span class="trunc" title="${esc(p.shopifyGid)}">${esc(gidNum)}</span></td>
+      <td class="mono" title="${esc(p.entityUuid)}" style="cursor:text;user-select:all;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(uuidSh)}</td>
+      <td class="mono">${p.shopifyGid && shopifyStore
+        ? `<a href="https://admin.shopify.com/store/${esc(shopifyStore)}/products/${p.shopifyGid.replace('gid://shopify/Product/','')}" target="_blank" style="color:#A100FF;text-decoration:none" title="${esc(p.shopifyGid)}">${esc(gidNum)}</a>`
+        : `<span class="trunc" title="${esc(p.shopifyGid)}">${esc(gidNum)}</span>`}</td>
       <td>${csBadge(p.csStatus)}</td>
       <td style="white-space:nowrap;color:#888;font-size:11px">${esc(p.lastUpdated || '—')}</td>
       <td>${resultBadge(p.lastResult)}</td>

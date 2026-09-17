@@ -15,4 +15,5 @@ id       = "d0313dc781e8427791dd61d0a1d1d12d"
 #   PROD_TENANT          NONPROD_TENANT
 #   PROD_CLIENT_ID       NONPROD_CLIENT_ID
 #   PROD_CLIENT_SECRET   NONPROD_CLIENT_SECRET
-#   KV_SECRET  — shared password the dashboard must send (x-kv-secret) to read/write products
+#   KV_SECRET      — shared password the dashboard must send (x-kv-secret) to read/write products and config
+#   SHOPIFY_STORE  — Shopify admin store handle (admin.shopify.com/store/<handle>), returned by /api/config

@@ -57,6 +57,7 @@ export default {
     try {
       if (path === '/api/products' && request.method === 'GET')  return await getProducts(request, env);
       if (path === '/api/products' && request.method === 'POST') return await saveProducts(request, env);
+      if (path === '/api/config') return await getConfig(request, env);
       if (path === '/api/connectorstates') return await connectorStates(request, env);
       if (path === '/api/publish')         return await publish(request, env);
       if (path === '/api/status')          return await status(request, env);
@@ -83,6 +84,16 @@ async function saveProducts(request, env) {
   const body   = await request.text();
   await env.SYNDIGO_PRODUCTS.put(`${envKey}/products`, body);
   return ok('{"ok":true}');
+}
+
+async function getConfig(request, env) {
+  // Gated by the same shared secret as KV: tenant-specific values are only handed to team members.
+  if (request.headers.get('x-kv-secret') !== env.KV_SECRET) return err('Unauthorized', 401);
+  const envKey  = new URL(request.url).searchParams.get('env') || 'nonprod';
+  const isProd  = envKey !== 'nonprod';
+  const baseUrl = isProd ? env.PROD_BASE_URL : env.NONPROD_BASE_URL;
+  const shopifyStore = env.SHOPIFY_STORE || '';
+  return ok(JSON.stringify({ baseUrl, shopifyStore }));
 }
 
 // ── Syndigo proxy ─────────────────────────────────────────────────────────────
