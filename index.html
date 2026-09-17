@@ -126,7 +126,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.8</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v1.8.1</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -873,7 +873,7 @@ function sorted(list) {
 
 function setFilter(f) {
   activeFilter = f;
-  const labels = { all: 'All', none: 'No CS', inprocess: 'In Process', errors: 'Errors', completed: 'Completed' };
+  const labels = { all: 'All', none: 'No CS', inprocess: 'In Process', completed: 'Completed' };
   const btn = document.getElementById('csFilterBtn');
   if (btn) {
     btn.textContent = labels[f] || 'All';
