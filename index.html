@@ -138,7 +138,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.5</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.6</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -875,7 +875,7 @@ async function publishSelected() {
   const freshBatches = [];
   for (let i = 0; i < fresh.length; i += BATCH_SIZE) freshBatches.push(fresh.slice(i, i + BATCH_SIZE));
 
-  const totalUnits = backfill.length + freshBatches.length;
+  let totalUnits = backfill.length + freshBatches.length;
   let doneUnits = 0;
 
   try {
@@ -914,6 +914,11 @@ async function publishSelected() {
         }));
       }
       renderTable(); updateStats(); saveToKV();
+
+      // Add successfully backfilled products to Phase 2 so they get pushed in the same run
+      const backfilledOk = backfill.filter(p => p.lastResult === 'CS Created');
+      for (let i = 0; i < backfilledOk.length; i += BATCH_SIZE) freshBatches.push(backfilledOk.slice(i, i + BATCH_SIZE));
+      totalUnits += Math.ceil(backfilledOk.length / BATCH_SIZE);
     }
 
     // ── Phase 2: Full publish (products without a Shopify GID) ───────────────
