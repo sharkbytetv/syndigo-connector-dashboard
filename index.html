@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.1</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.2</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -170,6 +170,7 @@
       <button onclick="saveCookie()">Save</button>
     </div>
     <div class="csrf-tag" id="csrfTag">csrftoken: not set</div>
+    <div id="sessionWarn" style="display:none;font-size:11px;color:#e67e22;margin-top:4px;font-weight:500"></div>
     <div class="auth-row" style="margin-top:8px">
       <input type="password" id="kvSecretInput" placeholder="KV secret — required to load/save products (ask your admin)" style="max-width:360px" />
       <button onclick="saveKvSecret()">Save</button>
@@ -395,6 +396,21 @@ function updateCsrfTag() {
   } else {
     el.textContent = 'csrftoken: not found in cookie';
     el.className = 'csrf-tag csrf-missing';
+  }
+
+  const sessionWarn = document.getElementById('sessionWarn');
+  if (sessionWarn) {
+    const m = (cookie || '').match(/error-detail=([^;]+)/);
+    let msg = '';
+    if (m) {
+      try {
+        const raw = decodeURIComponent(m[1]).replace(/^j:/, '');
+        const obj = JSON.parse(raw);
+        if (obj.errorDetail) msg = `⚠ Syndigo session error: ${obj.errorDetail}`;
+      } catch {}
+    }
+    sessionWarn.textContent = msg;
+    sessionWarn.style.display = msg ? '' : 'none';
   }
 }
 
@@ -1331,7 +1347,16 @@ function toggleSelectAll(checked) {
   renderTable(); updateStats();
 }
 
-function toggleRow(uuid, checked) { checked ? selectedIds.add(uuid) : selectedIds.delete(uuid); updateStats(); }
+function toggleRow(uuid, checked, tr) {
+  checked ? selectedIds.add(uuid) : selectedIds.delete(uuid);
+  if (tr) tr.className = checked ? 'row-selected' : '';
+  const filtered = getFiltered();
+  const allSel = filtered.every(p => selectedIds.has(p.entityUuid));
+  const anySel = filtered.some(p => selectedIds.has(p.entityUuid));
+  const sa = document.getElementById('selectAll');
+  if (sa) { sa.checked = allSel; sa.indeterminate = !allSel && anySel; }
+  updateStats();
+}
 function selectAllFiltered() { getFiltered().forEach(p => selectedIds.add(p.entityUuid)); renderTable(); updateStats(); }
 function deselectAll() { selectedIds.clear(); pinSelected = false; renderTable(); updateStats(); }
 
@@ -1379,7 +1404,7 @@ function renderTable() {
       ? `<button class="sku-expand" onclick="event.stopPropagation();toggleSkuExpand('${esc(p.entityUuid)}','${esc(p.internalId)}')" title="Show SKUs">${expanded ? '▾' : '▸'}</button>`
       : '';
     const mainRow = `<tr class="${sel ? 'row-selected' : ''}" onclick="rowClick(event,'${p.entityUuid}')">
-      <td style="padding-left:14px"><input type="checkbox" ${sel ? 'checked' : ''} onclick="event.stopPropagation();toggleRow('${p.entityUuid}',this.checked);renderTable();" /></td>
+      <td style="padding-left:14px"><input type="checkbox" ${sel ? 'checked' : ''} onclick="event.stopPropagation();toggleRow('${p.entityUuid}',this.checked,this.closest('tr'));" /></td>
       <td>${syndigoBaseUrl && p.entityUuid
         ? `<a href="${syndigoBaseUrl}/entity-manage?id=${esc(p.entityUuid)}&type=product" target="_blank" style="font-weight:700;color:#A100FF;text-decoration:none">${esc(p.internalId || '—')}</a>`
         : `<strong>${esc(p.internalId || '—')}</strong>`}</td>
@@ -1407,8 +1432,21 @@ function renderTable() {
 
 function rowClick(e, uuid) {
   if (e.target.type === 'checkbox') return;
-  selectedIds.has(uuid) ? selectedIds.delete(uuid) : selectedIds.add(uuid);
-  renderTable(); updateStats();
+  const isNowSelected = !selectedIds.has(uuid);
+  isNowSelected ? selectedIds.add(uuid) : selectedIds.delete(uuid);
+  if (pinSelected) { renderTable(); updateStats(); return; }
+  const tr = e.currentTarget;
+  if (tr) {
+    tr.className = isNowSelected ? 'row-selected' : '';
+    const cb = tr.querySelector('input[type=checkbox]');
+    if (cb) cb.checked = isNowSelected;
+  }
+  const filtered = getFiltered();
+  const allSel = filtered.every(p => selectedIds.has(p.entityUuid));
+  const anySel = filtered.some(p => selectedIds.has(p.entityUuid));
+  const sa = document.getElementById('selectAll');
+  if (sa) { sa.checked = allSel; sa.indeterminate = !allSel && anySel; }
+  updateStats();
 }
 
 async function toggleSkuExpand(uuid, internalId) {
