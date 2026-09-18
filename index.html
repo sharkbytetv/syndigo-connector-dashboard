@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.4</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.5</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -797,60 +797,75 @@ async function loadFromSyndigo() {
 
 // ── Connector States ──────────────────────────────────────────────────────────
 
-async function loadConnectorStates() {
-  if (running) return;
+async function loadConnectorStates(scopeProducts) {
+  const isFullRefresh = !scopeProducts;
+  if (isFullRefresh && running) return;
+  const targetProducts = scopeProducts || products;
   const btn = document.getElementById('btnLoadCS');
-  btn.disabled = true;
-  btn.textContent = 'Loading…';
+  if (isFullRefresh) { btn.disabled = true; btn.textContent = 'Loading…'; }
 
   try {
     const CHUNK = 1500;
-    const entityIds = products.map(p => p.entityUuid).filter(Boolean);
+    const entityIds = targetProducts.map(p => p.entityUuid).filter(Boolean);
     const csMap = {};
 
     const chunks = [];
     for (let i = 0; i < entityIds.length; i += CHUNK) chunks.push(entityIds.slice(i, i + CHUNK));
 
+    const PAGE = 2000; // Syndigo caps each response at this regardless of maxRecords requested
     const allObjects = (await Promise.all(chunks.map(async (chunk) => {
-      const body = {
-        _env: currentEnv,
-        params: {
-          query: { filters: {
-            typesCriterion: ['connectorstate'],
-            propertiesCriterion: [
-              { channelId: { exacts: ['app-shopify'] } },
-              { entityId:  { exacts: chunk } },
-            ],
-            nonContextual: false,
-          }},
-          fields: { attributes: ['channelState', 'productId', 'bulkOpId'] },
-          options: { maxRecords: 2000, from: 1 },
-        },
-      };
-      const resp = await fetch(`${API}/connectorstates`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await resp.json();
-      return data?.dataObjectOperationResponse?.dataObjects
-          || data?.response?.entities
-          || data?.response?.dataObjects
-          || [];
+      const chunkObjects = [];
+      let from = 1;
+      while (true) {
+        const body = {
+          _env: currentEnv,
+          params: {
+            query: { filters: {
+              typesCriterion: ['connectorstate'],
+              propertiesCriterion: [
+                { channelId: { exacts: ['app-shopify'] } },
+                { entityId:  { exacts: chunk } },
+              ],
+              nonContextual: false,
+            }},
+            fields: { attributes: ['channelState', 'productId', 'bulkOpId'] },
+            options: { maxRecords: PAGE, from },
+          },
+        };
+        const resp = await fetch(`${API}/connectorstates`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) throw new Error(`Connector state lookup failed: HTTP ${resp.status}`);
+        const data = await resp.json();
+        const objects = data?.dataObjectOperationResponse?.dataObjects
+            || data?.response?.entities
+            || data?.response?.dataObjects
+            || [];
+        chunkObjects.push(...objects);
+        if (objects.length < PAGE) break;
+        from += PAGE;
+      }
+      return chunkObjects;
     }))).flat();
 
     for (const obj of allObjects) {
       const eid = obj?.properties?.entityId;
-      if (!eid || csMap[eid]) continue;
+      if (!eid) continue;
+      const modified = obj?.properties?.modifiedDate || '';
+      const existing = csMap[eid];
+      if (existing && existing.modifiedDate >= modified) continue; // keep the most recently modified duplicate
       csMap[eid] = {
         channelState: obj?.data?.attributes?.channelState?.values?.[0]?.value || 'unknown',
         productId:    obj?.properties?.productId || obj?.data?.attributes?.productId?.values?.[0]?.value || '',
         csUuid:       obj?.id || '',
+        modifiedDate: modified,
       };
     }
 
-    btn.textContent = `Loading… (${Object.keys(csMap).length})`;
+    if (isFullRefresh) btn.textContent = `Loading… (${Object.keys(csMap).length})`;
 
-    for (const p of products) {
+    for (const p of targetProducts) {
       const cs = csMap[p.entityUuid];
       if (cs) {
         p.csStatus   = cs.channelState;
@@ -862,14 +877,18 @@ async function loadConnectorStates() {
       }
     }
 
-    renderTable();
-    updateStats();
-    setIts('cs'); refreshImportTimestamps();
-    saveToKV();
-    refreshOrphanCount(); // background — doesn't block
+    if (isFullRefresh) {
+      renderTable();
+      updateStats();
+      setIts('cs'); refreshImportTimestamps();
+      saveToKV();
+      refreshOrphanCount(); // background — doesn't block
+    }
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Refresh CS Status';
+    if (isFullRefresh) {
+      btn.disabled = false;
+      btn.textContent = 'Refresh CS Status';
+    }
   }
 }
 
@@ -1002,17 +1021,33 @@ async function publishSelected() {
   const toPublish = getFiltered().filter(p => selectedIds.has(p.entityUuid));
   if (!toPublish.length) return;
 
-  // Products with a GID but no CS get a direct CS backfill (already in Shopify, just missing the link).
-  // Everything else (no GID, or already has a CS) goes through the full batch-create-job flow.
-  const backfill = toPublish.filter(p => p.shopifyGid && (!p.csStatus || p.csStatus === 'none'));
-  const fresh    = toPublish.filter(p => !p.shopifyGid || (p.csStatus && p.csStatus !== 'none'));
-
   if (!cookie) { alert('Paste and save your session cookie first (required to publish to Shopify).'); return; }
 
   running = true;
   document.getElementById('btnPublish').disabled = true;
   document.getElementById('progressPanel').style.display = 'block';
   initBatchLog();
+
+  // Verify current CS/GID state directly from Syndigo before deciding backfill vs. fresh create —
+  // local csStatus/shopifyGid can be stale, and firing a create job for a product that already
+  // exists in Shopify would duplicate it there, not just in our own bookkeeping. If this check
+  // fails, abort rather than publish against unverified state.
+  setProgress(0, 1, `Verifying current connector state for ${toPublish.length} product${toPublish.length > 1 ? 's' : ''}…`);
+  try {
+    await loadConnectorStates(toPublish);
+  } catch (e) {
+    running = false;
+    document.getElementById('btnPublish').disabled = selectedIds.size === 0;
+    document.getElementById('progressPanel').style.display = 'none';
+    alert(`Could not verify current connector state before publishing — aborting to avoid creating duplicate Shopify products.\n\n${e}\n\nTry again once the connection issue is resolved.`);
+    return;
+  }
+  renderTable(); updateStats(); saveToKV();
+
+  // Products with a GID but no CS get a direct CS backfill (already in Shopify, just missing the link).
+  // Everything else (no GID, or already has a CS) goes through the full batch-create-job flow.
+  const backfill = toPublish.filter(p => p.shopifyGid && (!p.csStatus || p.csStatus === 'none'));
+  const fresh    = toPublish.filter(p => !p.shopifyGid || (p.csStatus && p.csStatus !== 'none'));
 
   const BATCH_SIZE  = 10;
   const CONCURRENCY = 15;
