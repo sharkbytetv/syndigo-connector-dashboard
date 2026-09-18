@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.2</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.3</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -1021,6 +1021,7 @@ async function publishSelected() {
 
   let totalUnits = backfill.length + freshBatches.length;
   let doneUnits = 0;
+  let fireAttempts = 0, fireFailures = 0;
 
   try {
     // ── Phase 1: CS backfill (products that already have a Shopify GID) ──────
@@ -1078,9 +1079,12 @@ async function publishSelected() {
         const batchNum  = g + i + 1;
         const t0        = Date.now();
         batchLogFire(batchNum, entityIds.length);
+        const fireAbort = new AbortController();
+        const fireTimer = setTimeout(() => fireAbort.abort(), 30000);
         try {
           const fireResp = await fetch(`${API}/publish`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
+            signal: fireAbort.signal,
             body: JSON.stringify({
               ...authPayload(),
               proxyObject: {
@@ -1106,8 +1110,12 @@ async function publishSelected() {
           const fireResult = await fireResp.json().catch(() => ({}));
           const fireStatus = fireResult?.response?.status || fireResult?.dataObjectOperationResponse?.status;
           const fireMs = Date.now() - t0;
+          fireAttempts++;
           if (fireResp.status !== 200 || fireStatus !== 'success') {
-            batchLogSet(batchNum, 'fire', `${fireMs}ms ✗`, 'bl-err');
+            fireFailures++;
+            batchLogSet(batchNum, 'fire', `${fireMs}ms — rejected`, 'bl-err');
+            batchLogSet(batchNum, 'poll', 'skipped', 'bl-err');
+            batchLogSet(batchNum, 'report', 'skipped', 'bl-err');
             const errMsg = `HTTP ${fireResp.status}: ${fireStatus || JSON.stringify(fireResult).substring(0, 80)}`;
             for (const p of batch) { p.lastResult = 'API Error'; p.error = errMsg; p.lastUpdated = new Date().toISOString(); }
             return { batch, taskId: null, t0 };
@@ -1115,9 +1123,15 @@ async function publishSelected() {
           batchLogSet(batchNum, 'fire', `${fireMs}ms`, 'bl-ok');
           return { batch, taskId, t0 };
         } catch (e) {
-          batchLogSet(batchNum, 'fire', 'err', 'bl-err');
-          for (const p of batch) { p.lastResult = 'API Error'; p.error = String(e); p.lastUpdated = new Date().toISOString(); }
+          fireAttempts++; fireFailures++;
+          const label = e.name === 'AbortError' ? 'timed out' : 'network error';
+          batchLogSet(batchNum, 'fire', label, 'bl-err');
+          batchLogSet(batchNum, 'poll', 'skipped', 'bl-err');
+          batchLogSet(batchNum, 'report', 'skipped', 'bl-err');
+          for (const p of batch) { p.lastResult = 'API Error'; p.error = e.name === 'AbortError' ? 'Fire request timed out after 30s' : String(e); p.lastUpdated = new Date().toISOString(); }
           return { batch, taskId: null, t0 };
+        } finally {
+          clearTimeout(fireTimer);
         }
       }));
 
@@ -1154,6 +1168,9 @@ async function publishSelected() {
     document.getElementById('progressPanel').style.display = 'none';
     renderTable();
     updateStats();
+    if (fireAttempts > 0 && fireFailures === fireAttempts) {
+      alert(`Publish failed for all ${fireAttempts} batch${fireAttempts > 1 ? 'es' : ''} — every request was rejected by Syndigo before it could even start (HTTP 200 with no success status).\n\nThis pattern usually means your Syndigo user role doesn't have permission to publish to Shopify, rather than a problem with the products themselves. Check with your Syndigo administrator that your account has the app-shopify publish role, or try a different user session.`);
+    }
   }
 }
 
@@ -1167,28 +1184,38 @@ async function pollTask(taskId, onWait) {
   for (let elapsed = 0; elapsed < 120; elapsed += 3) {
     await sleep(3000);
     if (onWait) onWait(elapsed + 3);
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 15000);
     try {
       const resp = await fetch(`${API}/status`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
+        signal: abort.signal,
         body: JSON.stringify({ ...authPayload(), taskId, paths }),
       });
       const data = await resp.json();
       const obj  = data?.jsonGraph?.root?.eventData?.generic?.tasksummaryobject?.byIds?.[taskId];
       const completedTime = obj?.properties?.value?.completedTime;
       if (completedTime) return { completedTime };
-    } catch {}
+    } catch {} finally {
+      clearTimeout(timer);
+    }
   }
   return { completedTime: null };
 }
 
 async function fetchReport(taskId) {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 15000);
   try {
     const resp = await fetch(`${API}/report`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
+      signal: abort.signal,
       body: JSON.stringify({ ...authPayload(), taskId }),
     });
     return resp.ok ? resp.text() : null;
-  } catch { return null; }
+  } catch { return null; } finally {
+    clearTimeout(timer);
+  }
 }
 
 function applyReport(csvText, completedTime) {
