@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.5</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.6</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -329,6 +329,7 @@ let masterSkuMap = new Map();
 let exportFormat = localStorage.getItem('syndigo_export_format') || 'csv';
 let pinSelected = false;
 let orphanCsCount = 0;
+let dupeCsCount = 0;
 let syncSummary = '';
 const expandedSkus = new Set();
 const skuCache = {};
@@ -883,6 +884,7 @@ async function loadConnectorStates(scopeProducts) {
       setIts('cs'); refreshImportTimestamps();
       saveToKV();
       refreshOrphanCount(); // background — doesn't block
+      refreshDupeCsCount(); // background — doesn't block
     }
   } finally {
     if (isFullRefresh) {
@@ -933,6 +935,51 @@ async function refreshOrphanCount() {
     updateStats();
   } catch {
     // silent — orphan count is a debug indicator, not critical
+  }
+}
+
+async function refreshDupeCsCount() {
+  try {
+    let from = 1;
+    const PAGE = 2000;
+    const seenCs = new Set();
+    const entityCounts = {};
+    while (true) {
+      const body = {
+        _env: currentEnv,
+        params: {
+          query: { filters: {
+            typesCriterion: ['connectorstate'],
+            propertiesCriterion: [{ channelId: { exacts: ['app-shopify'] } }],
+            nonContextual: false,
+          }},
+          fields: { attributes: ['channelState'] },
+          options: { maxRecords: PAGE, from },
+        },
+      };
+      const resp = await fetch(`${API}/connectorstates`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      const objects = data?.dataObjectOperationResponse?.dataObjects
+                   || data?.response?.entities
+                   || data?.response?.dataObjects
+                   || [];
+      for (const obj of objects) {
+        const csId = obj?.id;
+        if (csId && seenCs.has(csId)) continue;
+        if (csId) seenCs.add(csId);
+        const eid = obj?.properties?.entityId;
+        if (eid) entityCounts[eid] = (entityCounts[eid] || 0) + 1;
+      }
+      if (objects.length < PAGE) break;
+      from += PAGE;
+    }
+    dupeCsCount = Object.values(entityCounts).reduce((sum, c) => sum + (c > 1 ? c - 1 : 0), 0);
+    updateStats();
+  } catch {
+    // silent — dupe count is a debug indicator, not critical
   }
 }
 
@@ -1704,6 +1751,7 @@ function updateStats() {
        <span class="${errors ? 'stat-error' : ''}"><strong>${errors}</strong> errors</span>
        <span><strong>${selCount}</strong> selected</span>
        ${orphanCsCount ? `<span style="color:#bbb;font-size:11px" title="Blank CS records with no entity ID — created by failed bulk publishes. Counted separately in background."><strong>${orphanCsCount}</strong> orphan CS <button id="btnDeleteOrphans" onclick="deleteOrphanCs()" style="margin-left:4px;padding:1px 6px;font-size:10px;color:#c0392b;border:1px solid #ddd;border-radius:3px;background:#fff;cursor:pointer;font-weight:500">Delete all</button></span>` : ''}
+       ${dupeCsCount ? `<span style="color:#e67e22;font-size:11px" title="Extra CS records for entities that already have one — more than one record per entity. Counted separately in background."><strong>${dupeCsCount}</strong> duplicate CS</span>` : ''}
        ${syncSummary ? `<span style="color:#8e44ad;font-size:11px;font-weight:600">${syncSummary}</span>` : ''}`;
 
   const anyFilter = activeFilter !== 'all' || resultFilter !== 'all' || idFilter.size > 0
