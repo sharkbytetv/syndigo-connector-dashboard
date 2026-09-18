@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.3</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.4</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -1021,7 +1021,7 @@ async function publishSelected() {
 
   let totalUnits = backfill.length + freshBatches.length;
   let doneUnits = 0;
-  let fireAttempts = 0, fireFailures = 0;
+  let fireAttempts = 0, fireRejected = 0, fireNetworkFail = 0;
 
   try {
     // ── Phase 1: CS backfill (products that already have a Shopify GID) ──────
@@ -1112,7 +1112,7 @@ async function publishSelected() {
           const fireMs = Date.now() - t0;
           fireAttempts++;
           if (fireResp.status !== 200 || fireStatus !== 'success') {
-            fireFailures++;
+            fireRejected++;
             batchLogSet(batchNum, 'fire', `${fireMs}ms — rejected`, 'bl-err');
             batchLogSet(batchNum, 'poll', 'skipped', 'bl-err');
             batchLogSet(batchNum, 'report', 'skipped', 'bl-err');
@@ -1123,7 +1123,7 @@ async function publishSelected() {
           batchLogSet(batchNum, 'fire', `${fireMs}ms`, 'bl-ok');
           return { batch, taskId, t0 };
         } catch (e) {
-          fireAttempts++; fireFailures++;
+          fireAttempts++; fireNetworkFail++;
           const label = e.name === 'AbortError' ? 'timed out' : 'network error';
           batchLogSet(batchNum, 'fire', label, 'bl-err');
           batchLogSet(batchNum, 'poll', 'skipped', 'bl-err');
@@ -1168,8 +1168,10 @@ async function publishSelected() {
     document.getElementById('progressPanel').style.display = 'none';
     renderTable();
     updateStats();
-    if (fireAttempts > 0 && fireFailures === fireAttempts) {
+    if (fireAttempts > 0 && fireRejected === fireAttempts) {
       alert(`Publish failed for all ${fireAttempts} batch${fireAttempts > 1 ? 'es' : ''} — every request was rejected by Syndigo before it could even start (HTTP 200 with no success status).\n\nThis pattern usually means your Syndigo user role doesn't have permission to publish to Shopify, rather than a problem with the products themselves. Check with your Syndigo administrator that your account has the app-shopify publish role, or try a different user session.`);
+    } else if (fireAttempts > 0 && fireNetworkFail === fireAttempts) {
+      alert(`Publish failed for all ${fireAttempts} batch${fireAttempts > 1 ? 'es' : ''} due to a network error or timeout — Syndigo never returned a response in time.\n\nThis looks like a connectivity issue (your connection, the Worker, or Syndigo itself being slow/unreachable), not a permissions problem. Check your connection and try again.`);
     }
   }
 }
