@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.6</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.7</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -654,6 +654,7 @@ async function handleShopifyFile(input) {
   const PRODUCT_ID_COL = 'Metafield: custom.product_id [single_line_text_field]';
   const seen   = new Set();
   const gidMap = {};
+  const gidsByInternalId = {}; // tracks every distinct Shopify ID seen per internal product ID, to catch real duplicates
 
   for (const row of rows) {
     const shopifyId  = String(row['ID']           || '').trim();
@@ -663,10 +664,16 @@ async function handleShopifyFile(input) {
     if (!internalId && variantSku && masterSkuMap.has(variantSku))
       internalId = masterSkuMap.get(variantSku);
 
-    if (!shopifyId || !internalId || seen.has(shopifyId)) continue;
+    if (!shopifyId || !internalId) continue;
+    if (!gidsByInternalId[internalId]) gidsByInternalId[internalId] = new Set();
+    gidsByInternalId[internalId].add(shopifyId);
+
+    if (seen.has(shopifyId)) continue;
     seen.add(shopifyId);
     gidMap[internalId] = `gid://shopify/Product/${shopifyId}`;
   }
+
+  const realDupes = Object.entries(gidsByInternalId).filter(([, ids]) => ids.size > 1);
 
   let updated = 0;
   for (const p of products) {
@@ -674,7 +681,13 @@ async function handleShopifyFile(input) {
   }
 
   if (!updated) { input.value = ''; alert('No matches found. If custom.product_id metafield is missing, drop the Master Register first to enable SKU fallback.'); return; }
-  alert(`Backfilled ${updated} products with Shopify GIDs.`);
+
+  if (realDupes.length) {
+    const preview = realDupes.slice(0, 10).map(([id, ids]) => `${id}: ${[...ids].join(', ')}`).join('\n');
+    alert(`WARNING: ${realDupes.length} internal product ID(s) have MORE THAN ONE Shopify product in this export — real duplicates exist in Shopify.\n\n${preview}${realDupes.length > 10 ? '\n…and more' : ''}\n\nBackfilled ${updated} products (using the last Shopify ID seen per product). Review and merge/delete the extra Shopify products manually.`);
+  } else {
+    alert(`Backfilled ${updated} products with Shopify GIDs. No duplicate Shopify products detected for any matched internal product ID.`);
+  }
   setIts('shopify'); refreshImportTimestamps();
   renderTable(); updateStats(); saveToKV();
   input.value = '';
@@ -883,8 +896,7 @@ async function loadConnectorStates(scopeProducts) {
       updateStats();
       setIts('cs'); refreshImportTimestamps();
       saveToKV();
-      refreshOrphanCount(); // background — doesn't block
-      refreshDupeCsCount(); // background — doesn't block
+      refreshCsHealthCounts(); // background — doesn't block
     }
   } finally {
     if (isFullRefresh) {
@@ -894,54 +906,11 @@ async function loadConnectorStates(scopeProducts) {
   }
 }
 
-async function refreshOrphanCount() {
+async function refreshCsHealthCounts() {
   try {
     let from = 1;
     const PAGE = 2000;
-    let count = 0;
-    const seenCs = new Set();
-    while (true) {
-      const body = {
-        _env: currentEnv,
-        params: {
-          query: { filters: {
-            typesCriterion: ['connectorstate'],
-            propertiesCriterion: [{ channelId: { exacts: ['app-shopify'] } }],
-            nonContextual: false,
-          }},
-          fields: { attributes: ['channelState'] },
-          options: { maxRecords: PAGE, from },
-        },
-      };
-      const resp = await fetch(`${API}/connectorstates`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await resp.json();
-      const objects = data?.dataObjectOperationResponse?.dataObjects
-                   || data?.response?.entities
-                   || data?.response?.dataObjects
-                   || [];
-      for (const obj of objects) {
-        const csId = obj?.id;
-        if (csId && seenCs.has(csId)) continue;
-        if (csId) seenCs.add(csId);
-        if (!obj?.properties?.entityId) count++;
-      }
-      if (objects.length < PAGE) break;
-      from += PAGE;
-    }
-    orphanCsCount = count;
-    updateStats();
-  } catch {
-    // silent — orphan count is a debug indicator, not critical
-  }
-}
-
-async function refreshDupeCsCount() {
-  try {
-    let from = 1;
-    const PAGE = 2000;
+    let orphans = 0;
     const seenCs = new Set();
     const entityCounts = {};
     while (true) {
@@ -971,15 +940,17 @@ async function refreshDupeCsCount() {
         if (csId && seenCs.has(csId)) continue;
         if (csId) seenCs.add(csId);
         const eid = obj?.properties?.entityId;
-        if (eid) entityCounts[eid] = (entityCounts[eid] || 0) + 1;
+        if (!eid) { orphans++; continue; }
+        entityCounts[eid] = (entityCounts[eid] || 0) + 1;
       }
       if (objects.length < PAGE) break;
       from += PAGE;
     }
-    dupeCsCount = Object.values(entityCounts).reduce((sum, c) => sum + (c > 1 ? c - 1 : 0), 0);
+    orphanCsCount = orphans;
+    dupeCsCount   = Object.values(entityCounts).reduce((sum, c) => sum + (c > 1 ? c - 1 : 0), 0);
     updateStats();
   } catch {
-    // silent — dupe count is a debug indicator, not critical
+    // silent — these counts are a debug indicator, not critical
   }
 }
 
@@ -1322,7 +1293,7 @@ async function deleteSelectedCs() {
   if (running) return;
   const targets = getFiltered().filter(p => selectedIds.has(p.entityUuid) && p.csUuid);
   if (!targets.length) { alert('No selected products have a connector state to delete.'); return; }
-  if (!confirm(`Delete connector states for ${targets.length} product(s)?\n\nThis cannot be undone. The connector will treat them as net-new on the next publish.`)) return;
+  if (!confirm(`Delete connector states for ${targets.length} product(s)?\n\nThis cannot be undone. Their known Shopify GID is kept, so the next publish will re-link (backfill) rather than create a new product.`)) return;
 
   running = true;
   document.getElementById('btnDeleteCs').disabled = true;
@@ -1337,7 +1308,7 @@ async function deleteSelectedCs() {
       });
       const data = await resp.json();
       const status = data?.response?.status || data?.dataObjectOperationResponse?.status;
-      if (status === 'success') { p.csStatus = 'none'; p.csUuid = ''; p.shopifyGid = ''; deleted++; }
+      if (status === 'success') { p.csStatus = 'none'; p.csUuid = ''; deleted++; }
       else failed++;
     } catch { failed++; }
   }
