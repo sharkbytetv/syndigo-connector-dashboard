@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.9.8</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.10.0</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -301,7 +301,12 @@
   <button id="btnPinSelected" style="display:none" onclick="pinSelected=!pinSelected;renderTable()">↑ Selected first</button>
   <button id="btnClearFilters" style="display:none" onclick="clearFilters()">Clear Filters</button>
   <div class="spacer"></div>
+  <button class="btn-danger" id="btnClearError" onclick="clearSelectedErrors()" disabled>Clear Error (0)</button>
   <button class="btn-danger" id="btnDeleteCs" onclick="deleteSelectedCs()" disabled>Delete CS (0)</button>
+  <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#666">
+    Batch size
+    <input type="number" id="batchSizeInput" min="1" max="10" style="width:48px;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px" onchange="setBatchSize(this.value)" title="Products per publish batch (1–10). Lower = more reliable per-product results, higher = faster for bulk runs." />
+  </label>
   <button class="btn-primary" id="btnPublish" onclick="publishSelected()" disabled>Publish Selected (0)</button>
 </div>
 
@@ -335,6 +340,7 @@ const expandedSkus = new Set();
 const skuCache = {};
 let skuAttrTypeMap = {};
 let newEntityIds = new Set();
+let batchSize = Math.min(10, Math.max(1, parseInt(localStorage.getItem('syndigo_batch_size')) || 10));
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -344,6 +350,7 @@ window.onload = async () => {
   restoreCookie();
   restoreKvSecret();
   applyExportFormatUI();
+  document.getElementById('batchSizeInput').value = batchSize;
   document.addEventListener('click', e => {
     if (!e.target.closest('.dd-anchor') && !e.target.closest('.th-pos')) closeDD();
   });
@@ -1068,7 +1075,7 @@ async function publishSelected() {
   const backfill = toPublish.filter(p => p.shopifyGid && (!p.csStatus || p.csStatus === 'none'));
   const fresh    = toPublish.filter(p => !p.shopifyGid || (p.csStatus && p.csStatus !== 'none'));
 
-  const BATCH_SIZE  = 10;
+  const BATCH_SIZE  = batchSize;
   const CONCURRENCY = 15;
   const freshBatches = [];
   for (let i = 0; i < fresh.length; i += BATCH_SIZE) freshBatches.push(fresh.slice(i, i + BATCH_SIZE));
@@ -1085,7 +1092,7 @@ async function publishSelected() {
       for (let i = 0; i < backfill.length; i += CS_CONCURRENCY) {
         const chunk = backfill.slice(i, i + CS_CONCURRENCY);
         await Promise.all(chunk.map(async (p) => {
-          const csId = crypto.randomUUID();
+          const csId = await deterministicCsId(p.entityUuid);
           try {
             const resp = await fetch(`${API}/connectorstate/create`, {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
@@ -1132,6 +1139,10 @@ async function publishSelected() {
         const taskId    = crypto.randomUUID();
         const batchNum  = g + i + 1;
         const t0        = Date.now();
+        // Clear any prior result the moment we fire — whatever's left showing after this should be
+        // the true latest outcome (from a real report) or blank (if we never got a confirmed one),
+        // never a stale leftover from a previous attempt.
+        for (const p of batch) { p.lastResult = ''; p.error = ''; }
         batchLogFire(batchNum, entityIds.length);
         const fireAbort = new AbortController();
         const fireTimer = setTimeout(() => fireAbort.abort(), 30000);
@@ -1170,8 +1181,6 @@ async function publishSelected() {
             batchLogSet(batchNum, 'fire', `${fireMs}ms — rejected`, 'bl-err');
             batchLogSet(batchNum, 'poll', 'skipped', 'bl-err');
             batchLogSet(batchNum, 'report', 'skipped', 'bl-err');
-            const errMsg = `HTTP ${fireResp.status}: ${fireStatus || JSON.stringify(fireResult).substring(0, 80)}`;
-            for (const p of batch) { p.lastResult = 'API Error'; p.error = errMsg; p.lastUpdated = new Date().toISOString(); }
             return { batch, taskId: null, t0 };
           }
           batchLogSet(batchNum, 'fire', `${fireMs}ms`, 'bl-ok');
@@ -1182,7 +1191,6 @@ async function publishSelected() {
           batchLogSet(batchNum, 'fire', label, 'bl-err');
           batchLogSet(batchNum, 'poll', 'skipped', 'bl-err');
           batchLogSet(batchNum, 'report', 'skipped', 'bl-err');
-          for (const p of batch) { p.lastResult = 'API Error'; p.error = e.name === 'AbortError' ? 'Fire request timed out after 30s' : String(e); p.lastUpdated = new Date().toISOString(); }
           return { batch, taskId: null, t0 };
         } finally {
           clearTimeout(fireTimer);
@@ -1289,6 +1297,16 @@ function applyReport(csvText, completedTime) {
 }
 
 // ── Delete connector states ───────────────────────────────────────────────────
+
+// ── Clear stale errors ────────────────────────────────────────────────────────
+
+function clearSelectedErrors() {
+  const targets = getFiltered().filter(p => selectedIds.has(p.entityUuid) && (p.lastResult || p.error));
+  if (!targets.length) { alert('No selected products have a last result or error to clear.'); return; }
+  if (!confirm(`Clear the last result/error for ${targets.length} product(s)?\n\nUse this when you've confirmed elsewhere (e.g. Syndigo's own UI) that a product is actually fine — this only updates local bookkeeping, it does not publish anything.`)) return;
+  for (const p of targets) { p.lastResult = ''; p.error = ''; }
+  renderTable(); updateStats(); saveToKV();
+}
 
 async function deleteSelectedCs() {
   if (running) return;
@@ -1738,6 +1756,10 @@ function updateStats() {
   const btnDel = document.getElementById('btnDeleteCs');
   if (btnDel) btnDel.textContent = `Delete CS (${selCount})`;
   if (btnDel) btnDel.disabled = selCount === 0 || running;
+
+  const btnClearErr = document.getElementById('btnClearError');
+  if (btnClearErr) btnClearErr.textContent = `Clear Error (${selCount})`;
+  if (btnClearErr) btnClearErr.disabled = selCount === 0 || running;
 }
 
 // ── Progress ──────────────────────────────────────────────────────────────────
@@ -1794,6 +1816,13 @@ function setExportFormat(fmt) {
 function applyExportFormatUI() {
   document.getElementById('fmtCsv').className  = 'fmt-btn' + (exportFormat === 'csv'  ? ' active' : '');
   document.getElementById('fmtXlsx').className = 'fmt-btn' + (exportFormat === 'xlsx' ? ' active' : '');
+}
+
+function setBatchSize(val) {
+  const n = Math.min(10, Math.max(1, parseInt(val) || 10));
+  batchSize = n;
+  localStorage.setItem('syndigo_batch_size', n);
+  document.getElementById('batchSizeInput').value = n;
 }
 
 function exportData() {
@@ -1918,6 +1947,26 @@ function formatDate(s) {
   return isNaN(d) ? s : d.toLocaleString();
 }
 function sleep(ms)   { return new Promise(r => setTimeout(r, ms)); }
+
+// Deterministic UUID v5 derived from entityId + channel, so backfill always targets the same
+// connectorstate id for a given entity. If the "does a CS exist" check ever false-negatives and
+// backfill fires twice, both attempts hit the same id — Syndigo updates in place instead of
+// creating a duplicate (confirmed by direct test 2026-09-21).
+async function deterministicCsId(entityId) {
+  const namespace = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+  const name = `${entityId}:app-shopify`;
+  const nsBytes = namespace.replace(/-/g, '').match(/.{2}/g).map(b => parseInt(b, 16));
+  const nameBytes = new TextEncoder().encode(name);
+  const combined = new Uint8Array(nsBytes.length + nameBytes.length);
+  combined.set(nsBytes, 0);
+  combined.set(nameBytes, nsBytes.length);
+  const hashBuffer = await crypto.subtle.digest('SHA-1', combined);
+  const hash = new Uint8Array(hashBuffer).slice(0, 16);
+  hash[6] = (hash[6] & 0x0f) | 0x50; // version 5
+  hash[8] = (hash[8] & 0x3f) | 0x80; // variant 10
+  const hex = [...hash].map(b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20,32)}`;
+}
 </script>
 </body>
 </html>
