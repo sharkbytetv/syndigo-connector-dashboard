@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.10.2</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.10.3</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -1142,8 +1142,7 @@ async function publishSelected() {
         // Clear any prior result the moment we fire — whatever's left showing after this should be
         // the true latest outcome (from a real report) or blank (if we never got a confirmed one),
         // never a stale leftover from a previous attempt.
-        for (const p of batch) { p.lastResult = ''; p.error = ''; }
-        renderTable();
+        for (const p of batch) { p.lastResult = ''; p.error = ''; updateRowResultCells(p.entityUuid); }
         batchLogFire(batchNum, entityIds.length);
         const fireAbort = new AbortController();
         const fireTimer = setTimeout(() => fireAbort.abort(), 30000);
@@ -1505,7 +1504,7 @@ function renderTable() {
     const expandBtn = p.entityUuid
       ? `<button class="sku-expand" onclick="event.stopPropagation();toggleSkuExpand('${esc(p.entityUuid)}','${esc(p.internalId)}')" title="Show SKUs">${expanded ? '▾' : '▸'}</button>`
       : '';
-    const mainRow = `<tr class="${sel ? 'row-selected' : ''}" onclick="rowClick(event,'${p.entityUuid}')">
+    const mainRow = `<tr class="${sel ? 'row-selected' : ''}" data-uuid="${esc(p.entityUuid)}" onclick="rowClick(event,'${p.entityUuid}')">
       <td style="padding-left:14px"><input type="checkbox" ${sel ? 'checked' : ''} onclick="event.stopPropagation();toggleRow('${p.entityUuid}',this.checked,this.closest('tr'));" /></td>
       <td>${syndigoBaseUrl && p.entityUuid
         ? `<a href="${syndigoBaseUrl}/entity-manage?id=${esc(p.entityUuid)}&type=product" target="_blank" style="font-weight:700;color:#A100FF;text-decoration:none">${esc(p.internalId || '—')}</a>`
@@ -1530,6 +1529,19 @@ function renderTable() {
   const sa = document.getElementById('selectAll');
   sa.checked = allSel;
   sa.indeterminate = !allSel && anySel;
+}
+
+// Updates just the Last Result / Error cells for one row in place — avoids a full tbody rebuild
+// (which loses text selection and flickers SKU sub-rows) when only those two fields changed.
+function updateRowResultCells(entityUuid) {
+  const p  = products.find(x => x.entityUuid === entityUuid);
+  const tr = document.querySelector(`tr[data-uuid="${entityUuid}"]`);
+  if (!p || !tr) return;
+  const cells = tr.children;
+  if (cells.length < 10) return;
+  cells[8].innerHTML = resultBadge(p.lastResult);
+  cells[9].title = p.error || '';
+  cells[9].textContent = trunc(p.error, 70);
 }
 
 function rowClick(e, uuid) {
