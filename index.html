@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.10.1</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.10.2</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -1143,6 +1143,7 @@ async function publishSelected() {
         // the true latest outcome (from a real report) or blank (if we never got a confirmed one),
         // never a stale leftover from a previous attempt.
         for (const p of batch) { p.lastResult = ''; p.error = ''; }
+        renderTable();
         batchLogFire(batchNum, entityIds.length);
         const fireAbort = new AbortController();
         const fireTimer = setTimeout(() => fireAbort.abort(), 30000);
