@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.10.0</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.10.1</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -1819,7 +1819,8 @@ function applyExportFormatUI() {
 }
 
 function setBatchSize(val) {
-  const n = Math.min(10, Math.max(1, parseInt(val) || 10));
+  const parsed = parseInt(val);
+  const n = Math.min(10, Math.max(1, isNaN(parsed) ? 10 : parsed));
   batchSize = n;
   localStorage.setItem('syndigo_batch_size', n);
   document.getElementById('batchSizeInput').value = n;
