@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.10.3</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.10.5</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -307,6 +307,10 @@
     Batch size
     <input type="number" id="batchSizeInput" min="1" max="10" style="width:48px;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px" onchange="setBatchSize(this.value)" title="Products per publish batch (1–10). Lower = more reliable per-product results, higher = faster for bulk runs." />
   </label>
+  <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#666">
+    Concurrency
+    <input type="number" id="concurrencyInput" min="1" max="15" style="width:48px;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px" onchange="setConcurrency(this.value)" title="How many batches fire at once (1–15). Lower this if large runs are timing out on poll/report." />
+  </label>
   <button class="btn-primary" id="btnPublish" onclick="publishSelected()" disabled>Publish Selected (0)</button>
 </div>
 
@@ -341,6 +345,7 @@ const skuCache = {};
 let skuAttrTypeMap = {};
 let newEntityIds = new Set();
 let batchSize = Math.min(10, Math.max(1, parseInt(localStorage.getItem('syndigo_batch_size')) || 10));
+let concurrency = Math.min(15, Math.max(1, parseInt(localStorage.getItem('syndigo_concurrency')) || 15));
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -351,6 +356,7 @@ window.onload = async () => {
   restoreKvSecret();
   applyExportFormatUI();
   document.getElementById('batchSizeInput').value = batchSize;
+  document.getElementById('concurrencyInput').value = concurrency;
   document.addEventListener('click', e => {
     if (!e.target.closest('.dd-anchor') && !e.target.closest('.th-pos')) closeDD();
   });
@@ -1076,7 +1082,7 @@ async function publishSelected() {
   const fresh    = toPublish.filter(p => !p.shopifyGid || (p.csStatus && p.csStatus !== 'none'));
 
   const BATCH_SIZE  = batchSize;
-  const CONCURRENCY = 15;
+  const CONCURRENCY = concurrency;
   const freshBatches = [];
   for (let i = 0; i < fresh.length; i += BATCH_SIZE) freshBatches.push(fresh.slice(i, i + BATCH_SIZE));
 
@@ -1793,14 +1799,20 @@ function toggleBatchLog() {
   document.getElementById('batchLogToggle').textContent = (batchLogOpen ? '▾' : '▸') + ' Batch log';
 }
 
+function batchLogTime() {
+  const d = new Date();
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
 function batchLogFire(batchNum, productCount) {
   const tbody = document.getElementById('batchLogTbody');
   const tr = document.createElement('tr');
   tr.id = `bl-row-${batchNum}`;
+  const ts = `<span style="color:#bbb;font-size:9px;margin-left:4px">${batchLogTime()}</span>`;
   tr.innerHTML = `
     <td>${batchNum}</td>
     <td>${productCount}</td>
-    <td id="bl-fire-${batchNum}" class="bl-pending">…</td>
+    <td id="bl-fire-${batchNum}" class="bl-pending">…${ts}</td>
     <td id="bl-poll-${batchNum}" class="bl-pending">—</td>
     <td id="bl-report-${batchNum}" class="bl-pending">—</td>`;
   tbody.appendChild(tr);
@@ -1809,7 +1821,7 @@ function batchLogFire(batchNum, productCount) {
 function batchLogSet(batchNum, field, text, cls) {
   const el = document.getElementById(`bl-${field}-${batchNum}`);
   if (!el) return;
-  el.textContent = text;
+  el.innerHTML = `${esc(text)}<span style="color:#bbb;font-size:9px;margin-left:4px">${batchLogTime()}</span>`;
   el.className = cls || '';
 }
 
@@ -1837,6 +1849,14 @@ function setBatchSize(val) {
   batchSize = n;
   localStorage.setItem('syndigo_batch_size', n);
   document.getElementById('batchSizeInput').value = n;
+}
+
+function setConcurrency(val) {
+  const parsed = parseInt(val);
+  const n = Math.min(15, Math.max(1, isNaN(parsed) ? 15 : parsed));
+  concurrency = n;
+  localStorage.setItem('syndigo_concurrency', n);
+  document.getElementById('concurrencyInput').value = n;
 }
 
 function exportData() {
