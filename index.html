@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.10.5</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.11.0</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -311,6 +311,10 @@
     Concurrency
     <input type="number" id="concurrencyInput" min="1" max="15" style="width:48px;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px" onchange="setConcurrency(this.value)" title="How many batches fire at once (1–15). Lower this if large runs are timing out on poll/report." />
   </label>
+  <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#666">
+    Poll timeout (min)
+    <input type="number" id="pollTimeoutInput" min="1" max="60" style="width:48px;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px" onchange="setPollTimeout(this.value)" title="How long to wait for a batch job to finish before giving up (1–60 minutes). Raise this if jobs complete in Syndigo but rows come back with no result." />
+  </label>
   <button class="btn-primary" id="btnPublish" onclick="publishSelected()" disabled>Publish Selected (0)</button>
 </div>
 
@@ -346,6 +350,7 @@ let skuAttrTypeMap = {};
 let newEntityIds = new Set();
 let batchSize = Math.min(10, Math.max(1, parseInt(localStorage.getItem('syndigo_batch_size')) || 10));
 let concurrency = Math.min(15, Math.max(1, parseInt(localStorage.getItem('syndigo_concurrency')) || 15));
+let pollTimeoutMin = Math.min(60, Math.max(1, parseInt(localStorage.getItem('syndigo_poll_timeout')) || 10));
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -357,6 +362,7 @@ window.onload = async () => {
   applyExportFormatUI();
   document.getElementById('batchSizeInput').value = batchSize;
   document.getElementById('concurrencyInput').value = concurrency;
+  document.getElementById('pollTimeoutInput').value = pollTimeoutMin;
   document.addEventListener('click', e => {
     if (!e.target.closest('.dd-anchor') && !e.target.closest('.th-pos')) closeDD();
   });
@@ -1251,9 +1257,13 @@ async function pollTask(taskId, onWait) {
      'data','contexts',SELF_CTX,'attributes',STAT_ATTRS,'valContexts',VAL_CTX,
      ['group','properties','values']],
   ]);
-  for (let elapsed = 0; elapsed < 120; elapsed += 3) {
-    await sleep(3000);
-    if (onWait) onWait(elapsed + 3);
+  const t0 = Date.now();
+  const deadline = t0 + pollTimeoutMin * 60000;
+  let interval = 3000;                       // fast at first, then back off to keep request volume sane
+  while (Date.now() < deadline) {
+    await sleep(interval);
+    if (onWait) onWait(Math.round((Date.now() - t0) / 1000));
+    interval = Math.min(15000, Math.round(interval * 1.5));
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), 15000);
     try {
@@ -1857,6 +1867,14 @@ function setConcurrency(val) {
   concurrency = n;
   localStorage.setItem('syndigo_concurrency', n);
   document.getElementById('concurrencyInput').value = n;
+}
+
+function setPollTimeout(val) {
+  const parsed = parseInt(val);
+  const n = Math.min(60, Math.max(1, isNaN(parsed) ? 10 : parsed));
+  pollTimeoutMin = n;
+  localStorage.setItem('syndigo_poll_timeout', n);
+  document.getElementById('pollTimeoutInput').value = n;
 }
 
 function exportData() {
