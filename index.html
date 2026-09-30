@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.12.0</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.13.0</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -282,6 +282,7 @@
               <div class="dd-item" onclick="setResultFilter('apierr');closeDD()"><span class="dd-dot" style="background:#7b241c"></span> API Error</div>
               <div class="dd-item" onclick="setResultFilter('cscreated');closeDD()"><span class="dd-dot" style="background:#8e44ad"></span> CS Created</div>
               <div class="dd-item" onclick="setResultFilter('cserror');closeDD()"><span class="dd-dot" style="background:#6c3483"></span> CS Error</div>
+              <div class="dd-item" onclick="setResultFilter('timedout');closeDD()"><span class="dd-dot" style="background:#7b241c"></span> Timed Out</div>
             </div>
           </th>
           <th>Error</th>
@@ -1228,6 +1229,18 @@ async function publishSelected() {
       batchLogSet(batchNum, 'report', `${((Date.now() - t0)/1000).toFixed(1)}s`, csvText ? 'bl-ok' : 'bl-err');
       if (csvText) applyReport(csvText, completedTime);
       else if (completedTime) { const ts = new Date(completedTime).toISOString(); for (const p of batch) p.lastUpdated = ts; }
+      else {
+        // Syndigo never reported the job finished inside the poll window and there is no report
+        // to fall back on. Record it as a failure rather than leaving the rows blank, which is
+        // indistinguishable from never having published them.
+        const ts = new Date().toISOString();
+        for (const p of batch) {
+          p.lastResult  = 'Timed Out';
+          p.error       = `No completion from Syndigo after ${pollTimeoutMin} min — the job may still finish; re-check CS status before republishing.`;
+          p.lastUpdated = ts;
+          updateRowResultCells(p.entityUuid);
+        }
+      }
     };
 
     const worker = async () => {
@@ -1420,7 +1433,7 @@ function setFilter(f) {
 
 function setResultFilter(f) {
   resultFilter = f;
-  const labels = { all: 'All', success: 'Success', errored: 'Errored', apierr: 'API Error' };
+  const labels = { all: 'All', success: 'Success', errored: 'Errored', apierr: 'API Error', cscreated: 'CS Created', cserror: 'CS Error', timedout: 'Timed Out' };
   const btn = document.getElementById('resultFilterBtn');
   if (btn) {
     btn.textContent = labels[f] || 'All';
@@ -1459,7 +1472,7 @@ function getFiltered() {
     [...idFilter].some(term => p.error?.toLowerCase().includes(term.toLowerCase()))
   );
   if (resultFilter !== 'all') {
-    const map = { success: 'Success', errored: 'Errored', apierr: 'API Error', cscreated: 'CS Created', cserror: 'CS Error' };
+    const map = { success: 'Success', errored: 'Errored', apierr: 'API Error', cscreated: 'CS Created', cserror: 'CS Error', timedout: 'Timed Out' };
     list = list.filter(p => p.lastResult === map[resultFilter]);
   }
   const dateFrom = document.getElementById('dateFrom')?.value || '';
@@ -1769,6 +1782,7 @@ function resultBadge(r) {
   if (r === 'Success')   return `<span class="badge bg-success">Success</span>`;
   if (r === 'Errored')   return `<span class="badge bg-errored">Errored</span>`;
   if (r === 'API Error') return `<span class="badge bg-apierr">API Error</span>`;
+  if (r === 'Timed Out') return `<span class="badge bg-apierr">Timed Out</span>`;
   return `<span class="badge bg-unknown">${esc(r)}</span>`;
 }
 
