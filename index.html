@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.11.0</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.12.0</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -1140,102 +1140,121 @@ async function publishSelected() {
     }
 
     // ── Phase 2: Full publish (products without a Shopify GID) ───────────────
+    // Each batch is an independent Syndigo task with its own taskId and report, so it runs its
+    // whole fire → poll → report lifecycle on its own. A pool of CONCURRENCY workers pulls the
+    // next batch the moment a slot frees up: one slow batch costs a single slot instead of
+    // stalling every other batch in a group, and rows land as their own batch finishes.
     let doneBatches = 0;
-    for (let g = 0; g < freshBatches.length; g += CONCURRENCY) {
-      const group    = freshBatches.slice(g, g + CONCURRENCY);
-      const groupEnd = Math.min(g + CONCURRENCY, freshBatches.length);
-      setProgress(doneUnits, totalUnits, `Batches ${g+1}–${groupEnd} of ${freshBatches.length} — firing…`);
+    let inFlight    = 0;
+    let nextIndex   = 0;
+    let lastKvSave  = 0;
 
-      const fired = await Promise.all(group.map(async (batch, i) => {
-        const entityIds = batch.map(p => p.entityUuid);
-        const taskId    = crypto.randomUUID();
-        const batchNum  = g + i + 1;
-        const t0        = Date.now();
-        // Clear any prior result the moment we fire — whatever's left showing after this should be
-        // the true latest outcome (from a real report) or blank (if we never got a confirmed one),
-        // never a stale leftover from a previous attempt.
-        for (const p of batch) { p.lastResult = ''; p.error = ''; updateRowResultCells(p.entityUuid); }
-        batchLogFire(batchNum, entityIds.length);
-        const fireAbort = new AbortController();
-        const fireTimer = setTimeout(() => fireAbort.abort(), 30000);
-        try {
-          const fireResp = await fetch(`${API}/publish`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            signal: fireAbort.signal,
-            body: JSON.stringify({
-              ...authPayload(),
-              proxyObject: {
-                type: 'batch-create-job',
-                data: { jsonData: {
-                  requestBody: {
-                    jobIdentifier: { appId: 'app-shopify', jobDefId: 'shopify-rest-trigger' },
-                    batchOptions:  { poolId: 'rsbatch' },
-                    jobInputPayload: { searchObject: { params: {
-                      query: {
-                        ids: entityIds,
-                        filters: { typesCriterion: entityIds.map(() => 'product') },
-                        valueContexts: [{ source: 'internal', locale: 'en-US' }],
-                      },
-                      fields: { attributes: ['_ALL'], relationships: ['_ALL'] },
-                    }}},
-                  },
-                  requestHeaders: { 'x-rdp-taskId': taskId },
-                }},
-              },
-            }),
-          });
-          const fireResult = await fireResp.json().catch(() => ({}));
-          const fireStatus = fireResult?.response?.status || fireResult?.dataObjectOperationResponse?.status;
-          const fireMs = Date.now() - t0;
-          fireAttempts++;
-          if (fireResp.status !== 200 || fireStatus !== 'success') {
-            fireRejected++;
-            batchLogSet(batchNum, 'fire', `${fireMs}ms — rejected`, 'bl-err');
-            batchLogSet(batchNum, 'poll', 'skipped', 'bl-err');
-            batchLogSet(batchNum, 'report', 'skipped', 'bl-err');
-            return { batch, taskId: null, t0 };
-          }
-          batchLogSet(batchNum, 'fire', `${fireMs}ms`, 'bl-ok');
-          return { batch, taskId, t0 };
-        } catch (e) {
-          fireAttempts++; fireNetworkFail++;
-          const label = e.name === 'AbortError' ? 'timed out' : 'network error';
-          batchLogSet(batchNum, 'fire', label, 'bl-err');
+    const progressLabel = () =>
+      `${doneBatches} of ${freshBatches.length} batches done` +
+      (inFlight ? ` · ${inFlight} running` : '');
+
+    const runBatch = async (batch, batchNum) => {
+      const entityIds = batch.map(p => p.entityUuid);
+      const taskId    = crypto.randomUUID();
+      const t0        = Date.now();
+      // Clear any prior result the moment we fire — whatever's left showing after this should be
+      // the true latest outcome (from a real report) or blank (if we never got a confirmed one),
+      // never a stale leftover from a previous attempt.
+      for (const p of batch) { p.lastResult = ''; p.error = ''; updateRowResultCells(p.entityUuid); }
+      batchLogFire(batchNum, entityIds.length);
+
+      // ── fire ──
+      let liveTaskId = null;
+      const fireAbort = new AbortController();
+      const fireTimer = setTimeout(() => fireAbort.abort(), 30000);
+      try {
+        const fireResp = await fetch(`${API}/publish`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          signal: fireAbort.signal,
+          body: JSON.stringify({
+            ...authPayload(),
+            proxyObject: {
+              type: 'batch-create-job',
+              data: { jsonData: {
+                requestBody: {
+                  jobIdentifier: { appId: 'app-shopify', jobDefId: 'shopify-rest-trigger' },
+                  batchOptions:  { poolId: 'rsbatch' },
+                  jobInputPayload: { searchObject: { params: {
+                    query: {
+                      ids: entityIds,
+                      filters: { typesCriterion: entityIds.map(() => 'product') },
+                      valueContexts: [{ source: 'internal', locale: 'en-US' }],
+                    },
+                    fields: { attributes: ['_ALL'], relationships: ['_ALL'] },
+                  }}},
+                },
+                requestHeaders: { 'x-rdp-taskId': taskId },
+              }},
+            },
+          }),
+        });
+        const fireResult = await fireResp.json().catch(() => ({}));
+        const fireStatus = fireResult?.response?.status || fireResult?.dataObjectOperationResponse?.status;
+        const fireMs = Date.now() - t0;
+        fireAttempts++;
+        if (fireResp.status !== 200 || fireStatus !== 'success') {
+          fireRejected++;
+          batchLogSet(batchNum, 'fire', `${fireMs}ms — rejected`, 'bl-err');
           batchLogSet(batchNum, 'poll', 'skipped', 'bl-err');
           batchLogSet(batchNum, 'report', 'skipped', 'bl-err');
-          return { batch, taskId: null, t0 };
-        } finally {
-          clearTimeout(fireTimer);
+          return;
         }
-      }));
+        batchLogSet(batchNum, 'fire', `${fireMs}ms`, 'bl-ok');
+        liveTaskId = taskId;
+      } catch (e) {
+        fireAttempts++; fireNetworkFail++;
+        const label = e.name === 'AbortError' ? 'timed out' : 'network error';
+        batchLogSet(batchNum, 'fire', label, 'bl-err');
+        batchLogSet(batchNum, 'poll', 'skipped', 'bl-err');
+        batchLogSet(batchNum, 'report', 'skipped', 'bl-err');
+        return;
+      } finally {
+        clearTimeout(fireTimer);
+      }
 
-      setProgress(doneUnits, totalUnits, `Batches ${g+1}–${groupEnd} of ${freshBatches.length} — waiting…`);
-      const polled = await Promise.all(fired.map(async ({ batch, taskId, t0 }, i) => {
-        if (!taskId) return { batch, taskId: null, completedTime: null, t0 };
-        const batchNum = g + i + 1;
-        batchLogSet(batchNum, 'poll', '…', 'bl-pending');
-        const { completedTime } = await pollTask(taskId);
-        batchLogSet(batchNum, 'poll', `${((Date.now() - t0)/1000).toFixed(1)}s`, 'bl-ok');
-        return { batch, taskId, completedTime, t0 };
-      }));
+      // ── poll ──
+      batchLogSet(batchNum, 'poll', '…', 'bl-pending');
+      const { completedTime } = await pollTask(liveTaskId);
+      batchLogSet(batchNum, 'poll', `${((Date.now() - t0)/1000).toFixed(1)}s`, completedTime ? 'bl-ok' : 'bl-err');
 
-      await Promise.all(polled.map(async ({ batch, taskId, completedTime, t0 }, i) => {
-        if (!taskId) return;
-        const batchNum = g + i + 1;
-        batchLogSet(batchNum, 'report', '…', 'bl-pending');
-        const csvText = await fetchReport(taskId);
-        batchLogSet(batchNum, 'report', `${((Date.now() - t0)/1000).toFixed(1)}s`, csvText ? 'bl-ok' : 'bl-err');
-        if (csvText) applyReport(csvText, completedTime);
-        else if (completedTime) { const ts = new Date(completedTime).toISOString(); for (const p of batch) p.lastUpdated = ts; }
-      }));
+      // ── report ──
+      batchLogSet(batchNum, 'report', '…', 'bl-pending');
+      const csvText = await fetchReport(liveTaskId);
+      batchLogSet(batchNum, 'report', `${((Date.now() - t0)/1000).toFixed(1)}s`, csvText ? 'bl-ok' : 'bl-err');
+      if (csvText) applyReport(csvText, completedTime);
+      else if (completedTime) { const ts = new Date(completedTime).toISOString(); for (const p of batch) p.lastUpdated = ts; }
+    };
 
-      doneBatches += group.length;
-      doneUnits   += group.length;
-      setProgress(doneUnits, totalUnits, `${doneBatches} of ${freshBatches.length} batches done`);
-      renderTable(); updateStats(); saveToKV();
+    const worker = async () => {
+      while (nextIndex < freshBatches.length) {
+        const i = nextIndex++;
+        inFlight++;
+        try {
+          await runBatch(freshBatches[i], i + 1);
+        } finally {
+          inFlight--;
+          doneBatches++;
+          doneUnits++;
+          setProgress(doneUnits, totalUnits, progressLabel());
+          renderTable();
+          updateStats();
+          // Saving the whole product list after every batch would be a lot of KV writes on a big
+          // run, so coalesce them; the final save after the pool drains catches the tail.
+          if (Date.now() - lastKvSave > 5000) { lastKvSave = Date.now(); saveToKV(); }
+        }
+      }
+    };
 
-      if (g + CONCURRENCY < freshBatches.length) await sleep(1000);
-    }
+    setProgress(doneUnits, totalUnits, progressLabel());
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, freshBatches.length) }, worker)
+    );
+    if (freshBatches.length) saveToKV();
   } finally {
     running = false;
     document.getElementById('btnPublish').disabled = selectedIds.size === 0;
