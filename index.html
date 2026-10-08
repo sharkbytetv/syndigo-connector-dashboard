@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.13.0</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.13.1</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -882,6 +882,40 @@ async function loadConnectorStates(scopeProducts) {
       }
       return chunkObjects;
     }))).flat();
+
+    // Syndigo's search can silently leave records out, so also fetch by ID every CS we can
+    // predict: the deterministic ID our backfill writes, plus any CS ID we've seen before.
+    const seenIds = new Set(allObjects.map(o => o?.id));
+    const expectedIds = new Set();
+    await Promise.all(targetProducts.map(async (p) => {
+      if (!p.entityUuid) return;
+      expectedIds.add(await deterministicCsId(p.entityUuid));
+      if (p.csUuid) expectedIds.add(p.csUuid);
+    }));
+    const missingIds = [...expectedIds].filter(id => !seenIds.has(id));
+    const ID_CHUNK = 200;
+    const idChunks = [];
+    for (let i = 0; i < missingIds.length; i += ID_CHUNK) idChunks.push(missingIds.slice(i, i + ID_CHUNK));
+    const byIdObjects = (await Promise.all(idChunks.map(async (ids) => {
+      const resp = await fetch(`${API}/connectorstates`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          _env: currentEnv,
+          params: {
+            query: { ids, filters: { typesCriterion: ids.map(() => 'connectorstate') } },
+            fields: { attributes: ['channelState', 'productId', 'bulkOpId'] },
+            options: { maxRecords: ID_CHUNK },
+          },
+        }),
+      });
+      if (!resp.ok) throw new Error(`Connector state lookup by ID failed: HTTP ${resp.status}`);
+      const data = await resp.json();
+      return data?.dataObjectOperationResponse?.dataObjects
+          || data?.response?.entities
+          || data?.response?.dataObjects
+          || [];
+    }))).flat();
+    allObjects.push(...byIdObjects);
 
     for (const obj of allObjects) {
       const eid = obj?.properties?.entityId;
