@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.13.1</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.13.2</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -917,6 +917,50 @@ async function loadConnectorStates(scopeProducts) {
     }))).flat();
     allObjects.push(...byIdObjects);
 
+    // Connector-created states have random IDs we can't predict. For products that have a Shopify ID but
+    // still no state, look the state up by that Shopify ID before anything treats them as unlinked.
+    const foundEntities = new Set(allObjects.map(o => o?.properties?.entityId));
+    const gidsToFind = [...new Set(targetProducts
+      .filter(p => p.shopifyGid && p.entityUuid && !foundEntities.has(p.entityUuid))
+      .map(p => p.shopifyGid))];
+    const gidChunks = [];
+    for (let i = 0; i < gidsToFind.length; i += ID_CHUNK) gidChunks.push(gidsToFind.slice(i, i + ID_CHUNK));
+    const byGidObjects = (await Promise.all(gidChunks.map(async (gids) => {
+      const resp = await fetch(`${API}/connectorstates`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          _env: currentEnv,
+          params: {
+            query: { filters: {
+              typesCriterion: ['connectorstate'],
+              propertiesCriterion: [
+                { channelId: { exacts: ['app-shopify'] } },
+                { productId: { exacts: gids } },
+              ],
+              nonContextual: false,
+            }},
+            fields: { attributes: ['channelState', 'productId', 'bulkOpId'] },
+            options: { maxRecords: 2000 },
+          },
+        }),
+      });
+      if (!resp.ok) throw new Error(`Connector state lookup by Shopify ID failed: HTTP ${resp.status}`);
+      const data = await resp.json();
+      return data?.dataObjectOperationResponse?.dataObjects
+          || data?.response?.entities
+          || data?.response?.dataObjects
+          || [];
+    }))).flat();
+    allObjects.push(...byGidObjects);
+
+    // Which products' states point at each Shopify ID, so a product is never backfilled onto a Shopify
+    // product that a different product is already linked to.
+    const gidOwners = {};
+    for (const obj of allObjects) {
+      const g = obj?.properties?.productId, e = obj?.properties?.entityId;
+      if (g && e) (gidOwners[g] = gidOwners[g] || new Set()).add(e);
+    }
+
     for (const obj of allObjects) {
       const eid = obj?.properties?.entityId;
       if (!eid) continue;
@@ -938,10 +982,13 @@ async function loadConnectorStates(scopeProducts) {
       if (cs) {
         p.csStatus   = cs.channelState;
         p.csUuid     = cs.csUuid;
+        p.gidLinkedTo = '';
         if (cs.productId && !p.shopifyGid) p.shopifyGid = cs.productId;
       } else {
         p.csStatus = 'none';
         p.csUuid   = '';
+        const others = [...(gidOwners[p.shopifyGid] || [])].filter(e => e !== p.entityUuid);
+        p.gidLinkedTo = others.map(e => products.find(x => x.entityUuid === e)?.internalId || e).join(', ');
       }
     }
 
@@ -1119,8 +1166,16 @@ async function publishSelected() {
 
   // Products with a GID but no CS get a direct CS backfill (already in Shopify, just missing the link).
   // Everything else (no GID, or already has a CS) goes through the full batch-create-job flow.
-  const backfill = toPublish.filter(p => p.shopifyGid && (!p.csStatus || p.csStatus === 'none'));
-  const fresh    = toPublish.filter(p => !p.shopifyGid || (p.csStatus && p.csStatus !== 'none'));
+  // Never backfill a product onto a Shopify product that a different product is already linked to.
+  const linkedElsewhere = toPublish.filter(p => p.shopifyGid && (!p.csStatus || p.csStatus === 'none') && p.gidLinkedTo);
+  if (linkedElsewhere.length) {
+    alert(`${linkedElsewhere.length} product(s) skipped: their Shopify product is already linked to a different product.\n\n` +
+      linkedElsewhere.slice(0, 10).map(p => `${p.internalId} → ${p.shopifyGid.replace('gid://shopify/Product/', '')} (linked to ${p.gidLinkedTo})`).join('\n') +
+      (linkedElsewhere.length > 10 ? '\n…and more' : '') + '\n\nResolve these before publishing them.');
+  }
+  const publishable = toPublish.filter(p => !linkedElsewhere.includes(p));
+  const backfill = publishable.filter(p => p.shopifyGid && (!p.csStatus || p.csStatus === 'none'));
+  const fresh    = publishable.filter(p => !p.shopifyGid || (p.csStatus && p.csStatus !== 'none'));
 
   const BATCH_SIZE  = batchSize;
   const CONCURRENCY = concurrency;
