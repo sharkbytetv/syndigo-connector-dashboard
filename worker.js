@@ -97,7 +97,7 @@ async function getConfig(request, env) {
   const envKey  = new URL(request.url).searchParams.get('env') || 'nonprod';
   const isProd  = envKey !== 'nonprod';
   const baseUrl = isProd ? env.PROD_BASE_URL : env.NONPROD_BASE_URL;
-  const shopifyStore = env.SHOPIFY_STORE || '';
+  const shopifyStore = (isProd ? env.PROD_SHOPIFY_STORE : env.NONPROD_SHOPIFY_STORE) || env.SHOPIFY_STORE || '';
   return ok(JSON.stringify({ baseUrl, shopifyStore }));
 }
 
