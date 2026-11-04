@@ -151,7 +151,7 @@
 
 <header>
   <h1>Syndigo Connector Dashboard</h1>
-  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.13.2</span>
+  <span style="font-size:10px;font-weight:600;color:#666;letter-spacing:0.08em">v2.13.3</span>
   <div class="env-toggle">
     <button class="env-btn active-nonprod" id="envProd" onclick="setEnv('prod')">PROD</button>
     <button class="env-btn active-nonprod" id="envNonprod" onclick="setEnv('nonprod')">NONPROD</button>
@@ -738,48 +738,65 @@ async function handleMasterReg(input) {
   input.value = '';
 }
 
+// Syndigo's offset paging is only reliable on a fixed order: unsorted pages overlap and skip
+// records, and `from` starts at 0. Every multi-page read goes through here with a sort on a
+// unique key, and results are de-duplicated by id.
+const SYNDIGO_PAGE = 2000;
+const CS_SORT = { properties: [{ createdDate: '_ASC', sortType: '_DATETIME' }, { id: '_ASC' }] };
+
+async function fetchAllPages(fetchPage) {
+  const byId = new Map();
+  let total = null;
+  for (let from = 0; ; from += SYNDIGO_PAGE) {
+    const { items, totalRecords } = await fetchPage(from);
+    if (total === null && Number.isFinite(totalRecords)) total = totalRecords;
+    for (const it of items) if (it?.id && !byId.has(it.id)) byId.set(it.id, it);
+    if (items.length < SYNDIGO_PAGE) break;
+  }
+  return { items: [...byId.values()], total };
+}
+
+const csObjects = data => data?.dataObjectOperationResponse?.dataObjects
+  || data?.response?.entities
+  || data?.response?.dataObjects
+  || [];
+
 async function loadFromSyndigo() {
   if (running) return;
   const importBtn = document.querySelector('.import-main');
   if (importBtn) { importBtn.disabled = true; importBtn.textContent = 'Syncing…'; }
 
   try {
-    const PAGE = 2000;
-    const makeBody = (from) => JSON.stringify({
-      _env: currentEnv,
-      params: {
-        query: {
-          filters: { typesCriterion: ['product'] },
-          valueContexts: [{ source: 'internal', locale: 'en-US' }],
-        },
-        fields: { attributes: ['thgproductname', 'thgbrandname', 'variantoptions'] },
-        options: { maxRecords: PAGE, from },
-      },
-    });
-
-    const firstResp = await fetch(`${API}/entities`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
-      body: makeBody(1),
-    });
-    const firstData = await firstResp.json();
-    const total         = firstData?.response?.totalRecords || 0;
-    const firstEntities = firstData?.response?.entities    || [];
-
-    if (importBtn) importBtn.textContent = `Syncing… (${firstEntities.length}/${total})`;
-
-    const froms = [];
-    for (let from = PAGE + 1; from <= total; from += PAGE) froms.push(from);
-
-    const restEntities = (await Promise.all(froms.map(async (from) => {
+    const { items: allEntities, total } = await fetchAllPages(async (from) => {
       const resp = await fetch(`${API}/entities`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-kv-secret': kvSecret },
-        body: makeBody(from),
+        body: JSON.stringify({
+          _env: currentEnv,
+          params: {
+            query: {
+              filters: { typesCriterion: ['product'] },
+              valueContexts: [{ source: 'internal', locale: 'en-US' }],
+            },
+            fields: { attributes: ['thgproductname', 'thgbrandname', 'variantoptions'] },
+            sort: { attributes: [{ thgproductid: '_ASC' }] },
+            options: { maxRecords: SYNDIGO_PAGE, from },
+          },
+        }),
       });
+      if (!resp.ok) throw new Error(`Product sync failed: HTTP ${resp.status}`);
       const data = await resp.json();
-      return data?.response?.entities || [];
-    }))).flat();
+      const items = data?.response?.entities || [];
+      if (importBtn) importBtn.textContent = `Syncing… (${from + items.length}/${data?.response?.totalRecords ?? '?'})`;
+      return { items, totalRecords: data?.response?.totalRecords };
+    });
 
-    const allEntities = [...firstEntities, ...restEntities];
+    // A partial list would make Select All and Publish silently skip products, so keep the
+    // current list rather than replace it with an incomplete one.
+    if (total !== null && allEntities.length !== total) {
+      alert(`Product sync incomplete: Syndigo reported ${total} products but returned ${allEntities.length}. ` +
+            'The product list was not changed. Run Sync again.');
+      return;
+    }
 
     const prev = {};
     for (const p of products) prev[p.entityUuid] = p;
@@ -846,41 +863,31 @@ async function loadConnectorStates(scopeProducts) {
     const chunks = [];
     for (let i = 0; i < entityIds.length; i += CHUNK) chunks.push(entityIds.slice(i, i + CHUNK));
 
-    const PAGE = 2000; // Syndigo caps each response at this regardless of maxRecords requested
     const allObjects = (await Promise.all(chunks.map(async (chunk) => {
-      const chunkObjects = [];
-      let from = 1;
-      while (true) {
-        const body = {
-          _env: currentEnv,
-          params: {
-            query: { filters: {
-              typesCriterion: ['connectorstate'],
-              propertiesCriterion: [
-                { channelId: { exacts: ['app-shopify'] } },
-                { entityId:  { exacts: chunk } },
-              ],
-              nonContextual: false,
-            }},
-            fields: { attributes: ['channelState', 'productId', 'bulkOpId'] },
-            options: { maxRecords: PAGE, from },
-          },
-        };
+      const { items } = await fetchAllPages(async (from) => {
         const resp = await fetch(`${API}/connectorstates`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            _env: currentEnv,
+            params: {
+              query: { filters: {
+                typesCriterion: ['connectorstate'],
+                propertiesCriterion: [
+                  { channelId: { exacts: ['app-shopify'] } },
+                  { entityId:  { exacts: chunk } },
+                ],
+                nonContextual: false,
+              }},
+              fields: { attributes: ['channelState', 'productId', 'bulkOpId'] },
+              sort: CS_SORT,
+              options: { maxRecords: SYNDIGO_PAGE, from },
+            },
+          }),
         });
         if (!resp.ok) throw new Error(`Connector state lookup failed: HTTP ${resp.status}`);
-        const data = await resp.json();
-        const objects = data?.dataObjectOperationResponse?.dataObjects
-            || data?.response?.entities
-            || data?.response?.dataObjects
-            || [];
-        chunkObjects.push(...objects);
-        if (objects.length < PAGE) break;
-        from += PAGE;
-      }
-      return chunkObjects;
+        return { items: csObjects(await resp.json()) };
+      });
+      return items;
     }))).flat();
 
     // Syndigo's search can silently leave records out, so also fetch by ID every CS we can
@@ -1007,45 +1014,37 @@ async function loadConnectorStates(scopeProducts) {
   }
 }
 
+// One page of every Shopify connector state, for fetchAllPages.
+async function fetchAllShopifyCs(from) {
+  const resp = await fetch(`${API}/connectorstates`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      _env: currentEnv,
+      params: {
+        query: { filters: {
+          typesCriterion: ['connectorstate'],
+          propertiesCriterion: [{ channelId: { exacts: ['app-shopify'] } }],
+          nonContextual: false,
+        }},
+        fields: { attributes: ['channelState'] },
+        sort: CS_SORT,
+        options: { maxRecords: SYNDIGO_PAGE, from },
+      },
+    }),
+  });
+  if (!resp.ok) throw new Error(`Connector state lookup failed: HTTP ${resp.status}`);
+  return { items: csObjects(await resp.json()) };
+}
+
 async function refreshCsHealthCounts() {
   try {
-    let from = 1;
-    const PAGE = 2000;
     let orphans = 0;
-    const seenCs = new Set();
     const entityCounts = {};
-    while (true) {
-      const body = {
-        _env: currentEnv,
-        params: {
-          query: { filters: {
-            typesCriterion: ['connectorstate'],
-            propertiesCriterion: [{ channelId: { exacts: ['app-shopify'] } }],
-            nonContextual: false,
-          }},
-          fields: { attributes: ['channelState'] },
-          options: { maxRecords: PAGE, from },
-        },
-      };
-      const resp = await fetch(`${API}/connectorstates`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await resp.json();
-      const objects = data?.dataObjectOperationResponse?.dataObjects
-                   || data?.response?.entities
-                   || data?.response?.dataObjects
-                   || [];
-      for (const obj of objects) {
-        const csId = obj?.id;
-        if (csId && seenCs.has(csId)) continue;
-        if (csId) seenCs.add(csId);
-        const eid = obj?.properties?.entityId;
-        if (!eid) { orphans++; continue; }
-        entityCounts[eid] = (entityCounts[eid] || 0) + 1;
-      }
-      if (objects.length < PAGE) break;
-      from += PAGE;
+    const { items: objects } = await fetchAllPages(fetchAllShopifyCs);
+    for (const obj of objects) {
+      const eid = obj?.properties?.entityId;
+      if (!eid) { orphans++; continue; }
+      entityCounts[eid] = (entityCounts[eid] || 0) + 1;
     }
     orphanCsCount = orphans;
     dupeCsCount   = Object.values(entityCounts).reduce((sum, c) => sum + (c > 1 ? c - 1 : 0), 0);
@@ -1065,42 +1064,10 @@ async function deleteOrphanCs() {
   if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
 
   const orphanIds = [];
-  const seenCs = new Set();
-  let from = 1;
-  const PAGE = 2000;
   try {
-    while (true) {
-      const body = {
-        _env: currentEnv,
-        params: {
-          query: { filters: {
-            typesCriterion: ['connectorstate'],
-            propertiesCriterion: [{ channelId: { exacts: ['app-shopify'] } }],
-            nonContextual: false,
-          }},
-          fields: { attributes: ['channelState'] },
-          options: { maxRecords: PAGE, from },
-        },
-      };
-      const resp = await fetch(`${API}/connectorstates`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await resp.json();
-      const objects = data?.dataObjectOperationResponse?.dataObjects
-                   || data?.response?.entities
-                   || data?.response?.dataObjects
-                   || [];
-      for (const obj of objects) {
-        const csId = obj?.id;
-        if (!csId || seenCs.has(csId)) continue;
-        seenCs.add(csId);
-        if (!obj?.properties?.entityId) orphanIds.push(csId);
-      }
-      if (btn) btn.textContent = `Deleting… (found ${orphanIds.length})`;
-      if (objects.length < PAGE) break;
-      from += PAGE;
-    }
+    const { items: objects } = await fetchAllPages(fetchAllShopifyCs);
+    for (const obj of objects) if (!obj?.properties?.entityId) orphanIds.push(obj.id);
+    if (btn) btn.textContent = `Deleting… (found ${orphanIds.length})`;
 
     const CHUNK = 20;
     let deleted = 0, failed = 0;
