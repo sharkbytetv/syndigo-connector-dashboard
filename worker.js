@@ -65,6 +65,7 @@ export default {
       if (path === '/api/model') return await models(request, env);
       if (path === '/api/skus') return await getSkus(request, env);
       if (path === '/api/mappings') return await getMappings(request, env);
+      if (path === '/api/vqs-layout') return await vqsLayout(request, env);
       if (path === '/api/publish')         return await publish(request, env);
       if (path === '/api/status')          return await status(request, env);
       if (path === '/api/report')          return await report(request, env);
@@ -147,6 +148,31 @@ async function getMappings(request, env) {
     }),
   });
   return ok(await r.text());
+}
+
+// The VQS layout the vendor quote converter edits: one shared copy per project, with the last versions kept.
+// op "get" returns it. op "save" writes it, but only if the caller saw the latest copy (base = its savedAt);
+// otherwise it answers conflict:true with the current copy so nobody silently overwrites a colleague.
+async function vqsLayout(request, env) {
+  if (request.headers.get('x-kv-secret') !== env.KV_SECRET) return err('Unauthorized', 401);
+  const body = await request.json();
+  const project = String(body.project || 'default').replace(/[^a-z0-9_-]/gi, '').slice(0, 40) || 'default';
+  const key = `vqs/layout/${project}`;
+  const cur = JSON.parse((await env.SYNDIGO_PRODUCTS.get(key)) || 'null');
+  if (body.op === 'get') return ok(JSON.stringify({ layout: cur }));
+  if (body.op === 'save') {
+    if (!body.profile || !Array.isArray(body.profile.sections)) return err('Not a VQS layout', 400);
+    const text = JSON.stringify(body.profile);
+    if (text.length > 5000000) return err('Layout too large', 413);
+    if (cur && !body.force && body.base !== cur.savedAt) return ok(JSON.stringify({ conflict: true, layout: cur }));
+    const now = new Date().toISOString();
+    const history = (cur && cur.history) || [];
+    if (body.why) history.unshift({ at: now, why: String(body.why).slice(0, 60), profile: body.profile });
+    const rec = { profile: body.profile, savedAt: now, history: history.slice(0, 15) };
+    await env.SYNDIGO_PRODUCTS.put(key, JSON.stringify(rec));
+    return ok(JSON.stringify({ savedAt: now, history: rec.history }));
+  }
+  return err('Unknown op', 400);
 }
 
 async function getSkus(request, env) {
